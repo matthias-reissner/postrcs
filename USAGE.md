@@ -21,8 +21,8 @@ FROM pg_extension
 WHERE extname = 'postrcs';
 ```
 
-Nach Installation der 1.1-Dateien aktualisierst du eine bestehende 1.0-
-Installation einmal pro Datenbank:
+Nach Installation der 1.2-Dateien aktualisierst du eine bestehende 1.0- oder
+1.1-Installation einmal pro Datenbank:
 
 ```sql
 ALTER EXTENSION postrcs UPDATE;
@@ -98,7 +98,7 @@ WHERE id = 1;
 ```
 
 `rcs_diff` vergleicht zwei Revisionen und gibt einen Unified-Diff als Text
-zurück:
+mit getrennten Hunk-Bereichen zurück:
 
 ```sql
 SELECT rcs_diff(history, '1.1', '1.2') AS difference
@@ -107,9 +107,48 @@ WHERE id = 1;
 ```
 
 Namen lassen sich mit `rcs_resolve_revision` auflösen. Gleiche Inhalte
-ergeben einen leeren Diff. Der Diff und die gespeicherten Deltas erhalten
-gemeinsame Präfixe und Suffixe; mehrere getrennte Änderungen können weiterhin
-als ein größerer Änderungsbereich dargestellt werden.
+ergeben einen leeren Diff. Diff und Merge verwenden einen LCS-Vergleich; pro
+Vergleich sind höchstens 4 Millionen Zeilenpaare erlaubt.
+
+## RCS-Archive importieren und exportieren
+
+Ein vorhandenes RCS-Archiv lässt sich als Text importieren. Der Import prüft
+das Archiv; der Export liefert den Archivtext unverändert zurück:
+
+Das Beispiel verwendet eine in `psql` gesetzte Variable `archive_text`.
+
+```sql
+SELECT rcs_checkout(
+    rcs_import(:'archive_text'),
+    '1.2'
+);
+
+SELECT rcs_export(history)
+FROM documents
+WHERE id = 1;
+```
+
+Die Archivsyntax unterstützt LF- und CRLF-Zeilenenden. Der Archivtext ist
+weiterhin Text und kann keine beliebigen Binärdaten transportieren.
+
+## Änderungen zusammenführen
+
+`rcs_merge(archive, base, ours, theirs)` führt zwei Revisionen relativ zu einer
+gemeinsamen Basis zusammen. Das Ergebnis enthält den Text und ein
+Konfliktkennzeichen:
+
+```sql
+SELECT (rcs_merge(history, '1.2', 'feature', 'stable')).*
+FROM documents
+WHERE id = 1;
+```
+
+Nicht überlappende Änderungen werden kombiniert. Gleiche Änderungen auf beiden
+Seiten werden nur einmal übernommen. Bei widersprüchlichen Änderungen enthält
+`content` klassische Konfliktmarkierungen (`<<<<<<< ours`, `=======`,
+`>>>>>>> theirs`) und `has_conflicts` ist wahr. Prüfe und speichere den
+bereinigten Text anschließend als neue Revision. Ein Merge verändert das
+Archiv nicht automatisch.
 
 ## Branches und Tags
 
@@ -178,5 +217,9 @@ WHERE id = 1;
   Branches werden nicht unterstützt.
 - Es werden Textinhalte versioniert, keine Binärdateien.
 - Nicht-leere Inhalte müssen mit einem Zeilenumbruch enden.
+- Archive sind auf 16 MiB, einzelne Inhalte auf 8 MiB und Logmeldungen auf
+  1 MiB begrenzt.
+- Diff und Merge brechen bei mehr als 4 Millionen Zeilenpaaren mit einem
+  Größenfehler ab.
 - `rcs_archive` speichert ein Archiv in einer Spalte; es erzeugt keine
   automatische Historie für andere Spalten.

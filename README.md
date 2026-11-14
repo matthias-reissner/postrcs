@@ -45,7 +45,13 @@ CREATE EXTENSION postrcs;
   database server's current time.
 - `rcs_checkout(archive, revision_or_symbol)` returns a trunk or branch
   revision; symbolic revision names are accepted.
-- `rcs_diff(archive, revision_a, revision_b)` returns a unified diff.
+- `rcs_diff(archive, revision_a, revision_b)` returns a multi-hunk unified
+  diff.
+- `rcs_merge(archive, base, ours, theirs)` returns `rcs_merge_result` with
+  merged `content` and a `has_conflicts` flag. Conflicts are marked in the
+  returned text with `<<<<<<< ours`, `=======`, and `>>>>>>> theirs`.
+- `rcs_import(text)` validates and imports an existing RCS archive;
+  `rcs_export(archive)` returns its archive text.
 - `rcs_revisions(archive)` returns revision number, author, date, state, and
   log for each revision.
 - `rcs_head(archive)` returns the current trunk head.
@@ -57,12 +63,21 @@ CREATE EXTENSION postrcs;
 - `rcs_symbols(archive)` lists symbolic tags and branches.
 
 Non-empty text must end with a newline. Branches can currently be created from
-trunk revisions; nested branches are not supported. Deltas and unified diffs
-preserve common prefixes and suffixes, but multiple separate edits may still
-be represented as one larger changed region. The extension stores archives as
-text and does not version binary data.
+trunk revisions; nested branches are not supported. Contents are text, not
+binary data. Archives are limited to 16 MiB, individual check-in contents to
+8 MiB, and log messages to 1 MiB. Diff and merge use an LCS comparison capped
+at 4 million line pairs; large comparisons beyond that bound fail explicitly.
+The benchmark script in [benchmarks/postrcs_bench.sql](./benchmarks/postrcs_bench.sql)
+provides a repeatable local workload without enforcing machine-dependent timing
+thresholds.
 
-The extension's default version is 1.1. Existing 1.0 installations can be
-upgraded with `ALTER EXTENSION postrcs UPDATE;`.
+The extension's default version is 1.2. Existing 1.0 and 1.1 installations can
+be upgraded with `ALTER EXTENSION postrcs UPDATE;`.
+
+Run the repeatable timing workload in a database with PostRCS installed:
+
+```sh
+psql -d your_database -f benchmarks/postrcs_bench.sql
+```
 
 For SQL examples and a usage walkthrough, see [USAGE.md](./USAGE.md).

@@ -164,6 +164,14 @@ FROM documents,
      LATERAL rcs_symbols(history)
 WHERE id = 1;</code><button class="copy-button" type="button" data-copy="sql-query" aria-label="SQL-Beispiel Revisionen abfragen kopieren">Kopieren</button></pre>
         </article>
+        <article class="sql-example">
+<h3>Merge prüfen</h3>
+<pre class="code-block"><code>SELECT (rcs_merge(
+  history, '1.1', 'feature', 'stable'
+)).*
+FROM documents
+WHERE id = 1;</code><button class="copy-button" type="button" data-copy="sql-merge" aria-label="SQL-Beispiel Merge kopieren">Kopieren</button></pre>
+        </article>
       </div>
     </section>
 
@@ -180,7 +188,7 @@ WHERE id = 1;</code><button class="copy-button" type="button" data-copy="sql-que
             <div>
               <h3>Binärpaket herunterladen</h3>
               <p>Entpacke das Paket auf dem PostgreSQL-Server. Für andere PostgreSQL-Hauptversionen und Betriebssysteme ist ein passender Build erforderlich.</p>
-              <a class="text-link" href="https://github.com/matthias-reissner/postrcs/raw/refs/heads/main/dist/postrcs-1.1-pg18-windows-x64.zip">Windows x64 · PostgreSQL 18 herunterladen <span aria-hidden="true">↗</span></a>
+              <a class="text-link" href="https://github.com/matthias-reissner/postrcs/raw/refs/heads/main/dist/postrcs-1.2-pg18-windows-x64.zip">Windows x64 · PostgreSQL 18 herunterladen <span aria-hidden="true">↗</span></a>
             </div>
           </article>
           <article class="install-step">
@@ -209,8 +217,9 @@ Copy-Item .\share\extension\* `
           <ul>
             <li><code>postrcs.dll</code> – PostgreSQL-Funktionen</li>
             <li><code>postrcs.control</code> – Extension-Metadaten</li>
-            <li><code>postrcs--1.1.sql</code> – SQL-Typ und API</li>
+            <li><code>postrcs--1.2.sql</code> – SQL-Typ und API</li>
             <li><code>postrcs--1.0--1.1.sql</code> – Update von Version 1.0</li>
+            <li><code>postrcs--1.1--1.2.sql</code> – Update auf 1.2</li>
           </ul>
           <a href="https://github.com/matthias-reissner/postrcs/blob/main/USAGE.md">Vollständige Nutzungsanleitung <span aria-hidden="true">→</span></a>
         </aside>
@@ -285,7 +294,7 @@ Das ist die erste Revision.
         <div>
           <p class="eyebrow">Gut zu wissen</p>
           <h2>Ein fokussierter erster Schritt.</h2>
-          <p>PostRCS unterstützt trunk- und Branch-Revisionen sowie Tags für Textarchive. Branches können von trunk-Revisionen erstellt werden, aber nicht verschachtelt werden. Nicht-leere Inhalte brauchen einen abschließenden Zeilenumbruch; Binärdateien werden nicht unterstützt.</p>
+          <p>PostRCS unterstützt trunk- und Branch-Revisionen, Tags, getrennte Diff-Hunks, Drei-Wege-Merges mit Konfliktmarkern und den Import/Export nativer RCS-Archive. Branches können von trunk-Revisionen erstellt, aber nicht verschachtelt werden. Nicht-leere Inhalte brauchen einen abschließenden Zeilenumbruch; Binärdateien werden nicht unterstützt.</p>
         </div>
         <a class="button button-dark" href="https://github.com/matthias-reissner/postrcs/blob/main/USAGE.md">Nutzungsanleitung öffnen <span aria-hidden="true">↗</span></a>
       </div>

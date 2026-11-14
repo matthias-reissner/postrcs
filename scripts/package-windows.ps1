@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string] $PgRoot,
-    [string] $Version = "1.1"
+    [string] $Version = "1.2"
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,7 +30,11 @@ try {
         -Destination $extensionPath
     Copy-Item -LiteralPath (Join-Path $repositoryRoot "postrcs--1.1.sql") `
         -Destination $extensionPath
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot "postrcs--1.2.sql") `
+        -Destination $extensionPath
     Copy-Item -LiteralPath (Join-Path $repositoryRoot "postrcs--1.0--1.1.sql") `
+        -Destination $extensionPath
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot "postrcs--1.1--1.2.sql") `
         -Destination $extensionPath
     Copy-Item -LiteralPath (Join-Path $repositoryRoot "USAGE.md") `
         -Destination $stagePath

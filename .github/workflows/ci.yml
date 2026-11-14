@@ -20,12 +20,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install PostgreSQL ${{ matrix.pg }}
         run: |
-          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc |
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc |
             sudo gpg --dearmor -o /usr/share/keyrings/postgresql.gpg
           echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" |
             sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
           sudo apt-get install -y postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }}
+          if ! sudo pg_lsclusters --no-header | grep -Eq '^${{ matrix.pg }}[[:space:]]+main'; then
+            sudo pg_createcluster ${{ matrix.pg }} main
+          fi
           sudo pg_ctlcluster ${{ matrix.pg }} main start
           sudo -u postgres createuser --superuser "$USER"
       - name: Build and install
@@ -34,3 +38,9 @@ jobs:
           sudo make install PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
       - name: Run regression tests
         run: make installcheck PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+      - name: Show regression differences
+        if: failure()
+        run: |
+          if [ -f regression.diffs ]; then
+            cat regression.diffs
+          fi

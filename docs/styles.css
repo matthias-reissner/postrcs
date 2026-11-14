@@ -942,7 +942,7 @@ pre {
   }
 
   .install-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 18px;
   }
 
@@ -985,9 +985,14 @@ pre {
 
   .hero {
     width: calc(100% - 16px);
+    grid-template-columns: minmax(0, 1fr);
     min-height: 0;
     padding: 44px 24px;
     border-radius: 12px;
+  }
+
+  .hero-copy {
+    min-width: 0;
   }
 
   h1 {
@@ -1029,8 +1034,15 @@ pre {
   }
 
   .install-step {
-    grid-template-columns: 31px 1fr;
+    grid-template-columns: 31px minmax(0, 1fr);
     gap: 10px;
+    min-width: 0;
+  }
+
+  .install-steps,
+  .install-step > div,
+  .install-note {
+    min-width: 0;
   }
 
   .install-step .step-number {

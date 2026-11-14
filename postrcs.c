@@ -19,6 +19,11 @@
 
 PG_MODULE_MAGIC;
 
+#define RCS_MAX_ARCHIVE_SIZE ((Size) 16 * 1024 * 1024)
+#define RCS_MAX_CONTENT_SIZE ((Size) 8 * 1024 * 1024)
+#define RCS_MAX_LOG_SIZE ((Size) 1024 * 1024)
+#define RCS_MAX_DIFF_CELLS ((Size) 4 * 1024 * 1024)
+
 typedef struct RcsToken
 {
     char *value;
@@ -81,6 +86,28 @@ typedef struct RcsLines
     int count;
     int capacity;
 } RcsLines;
+
+typedef struct RcsDiffOp
+{
+    char kind;
+    char *line;
+    int old_line;
+    int new_line;
+} RcsDiffOp;
+
+typedef struct RcsDiff
+{
+    RcsDiffOp *items;
+    int count;
+    int capacity;
+} RcsDiff;
+
+typedef struct RcsChange
+{
+    int start;
+    int end;
+    RcsLines replacement;
+} RcsChange;
 
 static void
 append_line(RcsLines *lines, char *line)
@@ -304,6 +331,10 @@ parse_archive(char *source, Size length)
     int index = 0;
     int capacity = 0;
 
+    if (length > RCS_MAX_ARCHIVE_SIZE)
+        ereport(ERROR,
+                (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+                 errmsg("RCS archive exceeds the 16 MiB size limit")));
     archive->source = source;
     archive->length = length;
     tokenize(archive);
@@ -579,6 +610,171 @@ split_lines(const char *text, RcsLines *lines)
     return lines->count;
 }
 
+static void
+append_diff_op(RcsDiff *diff, char kind, char *line, int old_line,
+               int new_line)
+{
+    if (diff->count == diff->capacity)
+    {
+        diff->capacity = diff->capacity ? diff->capacity * 2 : 32;
+        diff->items = diff->items
+            ? repalloc(diff->items, sizeof(RcsDiffOp) * diff->capacity)
+            : palloc(sizeof(RcsDiffOp) * diff->capacity);
+    }
+    diff->items[diff->count].kind = kind;
+    diff->items[diff->count].line = line;
+    diff->items[diff->count].old_line = old_line;
+    diff->items[diff->count].new_line = new_line;
+    diff->count++;
+}
+
+static void
+compute_diff_ops(RcsLines *old_lines, RcsLines *new_lines, RcsDiff *diff)
+{
+    Size rows = (Size) old_lines->count + 1;
+    Size columns = (Size) new_lines->count + 1;
+    Size cells;
+    uint32 *lcs;
+    int i;
+    int j;
+
+    if (rows > RCS_MAX_DIFF_CELLS / columns)
+        ereport(ERROR,
+                (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+                 errmsg("diff exceeds the 4 million line-pair limit"),
+                 errhint("Use fewer lines or split the comparison into smaller revisions.")));
+    cells = rows * columns;
+    lcs = palloc(sizeof(uint32) * cells);
+    memset(lcs, 0, sizeof(uint32) * cells);
+
+    for (i = old_lines->count - 1; i >= 0; i--)
+        for (j = new_lines->count - 1; j >= 0; j--)
+        {
+            Size position = (Size) i * columns + j;
+
+            if (strcmp(old_lines->items[i], new_lines->items[j]) == 0)
+                lcs[position] = lcs[(Size) (i + 1) * columns + j + 1] + 1;
+            else
+                lcs[position] = Max(lcs[(Size) (i + 1) * columns + j],
+                                    lcs[(Size) i * columns + j + 1]);
+        }
+
+    i = 0;
+    j = 0;
+    while (i < old_lines->count || j < new_lines->count)
+    {
+        if (i < old_lines->count && j < new_lines->count &&
+            strcmp(old_lines->items[i], new_lines->items[j]) == 0)
+        {
+            append_diff_op(diff, ' ', old_lines->items[i], i, j);
+            i++;
+            j++;
+        }
+        else if (i < old_lines->count &&
+                 (j == new_lines->count ||
+                  lcs[(Size) (i + 1) * columns + j] >=
+                  lcs[(Size) i * columns + j + 1]))
+        {
+            append_diff_op(diff, '-', old_lines->items[i], i, j);
+            i++;
+        }
+        else
+        {
+            append_diff_op(diff, '+', new_lines->items[j], i, j);
+            j++;
+        }
+    }
+}
+
+static RcsChange *
+diff_changes(RcsDiff *diff, int *change_count)
+{
+    RcsChange *changes = NULL;
+    int capacity = 0;
+    int i = 0;
+
+    *change_count = 0;
+    while (i < diff->count)
+    {
+        RcsChange change;
+
+        if (diff->items[i].kind == ' ')
+        {
+            i++;
+            continue;
+        }
+        memset(&change, 0, sizeof(change));
+        change.start = diff->items[i].old_line;
+        change.end = change.start;
+        while (i < diff->count && diff->items[i].kind != ' ')
+        {
+            if (diff->items[i].kind == '-')
+                change.end = diff->items[i].old_line + 1;
+            else
+                append_line(&change.replacement, diff->items[i].line);
+            i++;
+        }
+        if (*change_count == capacity)
+        {
+            capacity = capacity ? capacity * 2 : 16;
+            changes = changes
+                ? repalloc(changes, sizeof(RcsChange) * capacity)
+                : palloc(sizeof(RcsChange) * capacity);
+        }
+        changes[(*change_count)++] = change;
+    }
+    return changes;
+}
+
+static bool
+change_overlaps_region(const RcsChange *change, int start, int end)
+{
+    if (change->start == change->end && start == end)
+        return change->start == start;
+    if (change->start == change->end)
+        return change->start > start && change->start < end;
+    if (start == end)
+        return start > change->start && start < change->end;
+    return change->start < end && start < change->end;
+}
+
+static void
+append_base_lines(StringInfo output, RcsLines *base, int start, int end)
+{
+    int i;
+
+    for (i = start; i < end; i++)
+        appendStringInfoString(output, base->items[i]);
+}
+
+static void
+append_change_lines(StringInfo output, const RcsChange *change)
+{
+    int i;
+
+    for (i = 0; i < change->replacement.count; i++)
+        appendStringInfoString(output, change->replacement.items[i]);
+}
+
+static char *
+merge_variant(RcsLines *base, RcsChange *changes, int first, int end,
+              int start, int finish)
+{
+    StringInfoData result;
+    int position = start;
+    int i;
+
+    initStringInfo(&result);
+    for (i = first; i < end; i++)
+    {
+        append_base_lines(&result, base, position, changes[i].start);
+        append_change_lines(&result, &changes[i]);
+        position = changes[i].end;
+    }
+    append_base_lines(&result, base, position, finish);
+    return result.data;
+}
+
 static char *
 join_lines(RcsLines *lines)
 {
@@ -618,10 +814,14 @@ apply_script(const char *base, const char *script)
                      errmsg("invalid RCS edit script command")));
         p = end + 1;
         count = strtol(p, &end, 10);
-        if (end == p || *end != '\n' || count <= 0)
+        if (end == p ||
+            (*end != '\n' && !(*end == '\r' && end[1] == '\n')) ||
+            count <= 0)
             ereport(ERROR,
                     (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
                      errmsg("invalid RCS edit script command")));
+        if (*end == '\r')
+            end++;
         p = end + 1;
         if (operation == 'd')
         {
@@ -978,10 +1178,23 @@ validate_checkin_content(const char *contents)
 {
     Size length = strlen(contents);
 
+    if (length > RCS_MAX_CONTENT_SIZE)
+        ereport(ERROR,
+                (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+                 errmsg("RCS content exceeds the 8 MiB size limit")));
     if (length > 0 && contents[length - 1] != '\n')
         ereport(ERROR,
                 (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
                  errmsg("RCS text must end with a newline")));
+}
+
+static void
+validate_log(const char *log)
+{
+    if (strlen(log) > RCS_MAX_LOG_SIZE)
+        ereport(ERROR,
+                (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+                 errmsg("RCS log message exceeds the 1 MiB size limit")));
 }
 
 static void
@@ -1001,12 +1214,15 @@ Datum
 rcs_is_valid(PG_FUNCTION_ARGS)
 {
     text *input = PG_GETARG_TEXT_PP(0);
-    char *source = text_to_cstring(input);
+    char *source;
     bool valid = true;
     MemoryContext oldcontext = CurrentMemoryContext;
 
     if (VARSIZE_ANY_EXHDR(input) == 0)
         PG_RETURN_BOOL(true);
+    if (VARSIZE_ANY_EXHDR(input) > RCS_MAX_ARCHIVE_SIZE)
+        PG_RETURN_BOOL(false);
+    source = text_to_cstring(input);
 
     PG_TRY();
     {
@@ -1060,6 +1276,7 @@ rcs_checkin(PG_FUNCTION_ARGS)
     RcsRevision *head = NULL;
 
     validate_author(author);
+    validate_log(log);
 
     if (VARSIZE_ANY_EXHDR(archive_arg) > 0)
     {
@@ -1241,6 +1458,23 @@ rcs_create_branch(PG_FUNCTION_ARGS)
         if (branch_id >= next_branch && branch_id < INT_MAX)
             next_branch = branch_id + 1;
     }
+    for (i = 0; i < archive->symbol_count; i++)
+    {
+        const char *suffix;
+        char *end;
+        long branch_id;
+
+        if (!is_branch_number(archive->symbols[i].revision) ||
+            strncmp(archive->symbols[i].revision, prefix,
+                    strlen(prefix)) != 0)
+            continue;
+        suffix = archive->symbols[i].revision + strlen(prefix);
+        branch_id = strtol(suffix, &end, 10);
+        if (end == suffix || *end != '\0')
+            continue;
+        if (branch_id >= next_branch && branch_id < INT_MAX)
+            next_branch = branch_id + 1;
+    }
     branch_number = psprintf("%s%ld", prefix, next_branch);
     set_symbol_edit(archive, name, branch_number, &edit);
     PG_RETURN_TEXT_P(cstring_to_text(
@@ -1319,6 +1553,7 @@ rcs_branch_checkin(PG_FUNCTION_ARGS)
                 (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                  errmsg("cannot check in to a branch in an empty archive")));
     validate_checkin_content(contents);
+    validate_log(log);
     validate_author(author);
     archive = parse_archive(source, strlen(source));
     symbol = find_symbol(archive, branch_name);
@@ -1416,44 +1651,209 @@ rcs_diff(PG_FUNCTION_ARGS)
     StringInfoData result;
     RcsLines left_lines = {NULL, 0, 0};
     RcsLines right_lines = {NULL, 0, 0};
-    int prefix = 0;
-    int suffix = 0;
+    RcsDiff diff = {NULL, 0, 0};
     int i;
 
-    initStringInfo(&result);
     if (strcmp(left, right) == 0)
         PG_RETURN_TEXT_P(cstring_to_text(""));
 
     split_lines(left, &left_lines);
     split_lines(right, &right_lines);
-    while (prefix < left_lines.count && prefix < right_lines.count &&
-           strcmp(left_lines.items[prefix], right_lines.items[prefix]) == 0)
-        prefix++;
-    while (suffix < left_lines.count - prefix &&
-           suffix < right_lines.count - prefix &&
-           strcmp(left_lines.items[left_lines.count - suffix - 1],
-                  right_lines.items[right_lines.count - suffix - 1]) == 0)
-        suffix++;
+    compute_diff_ops(&left_lines, &right_lines, &diff);
+    initStringInfo(&result);
+    appendStringInfo(&result, "--- %s\n+++ %s\n",
+                     left_revision, right_revision);
+    for (i = 0; i < diff.count;)
+    {
+        int old_start;
+        int new_start;
+        int old_count = 0;
+        int new_count = 0;
+        int end;
+        int j;
 
-    appendStringInfo(&result, "--- %s\n+++ %s\n@@ -%d,%d +%d,%d @@\n",
-                     left_revision, right_revision,
-                     left_lines.count - prefix - suffix
-                         ? prefix + 1 : prefix,
-                     left_lines.count - prefix - suffix,
-                     right_lines.count - prefix - suffix
-                         ? prefix + 1 : prefix,
-                     right_lines.count - prefix - suffix);
-    for (i = prefix; i < left_lines.count - suffix; i++)
-    {
-        appendStringInfoChar(&result, '-');
-        appendStringInfoString(&result, left_lines.items[i]);
-    }
-    for (i = prefix; i < right_lines.count - suffix; i++)
-    {
-        appendStringInfoChar(&result, '+');
-        appendStringInfoString(&result, right_lines.items[i]);
+        if (diff.items[i].kind == ' ')
+        {
+            i++;
+            continue;
+        }
+        old_start = diff.items[i].old_line;
+        new_start = diff.items[i].new_line;
+        end = i;
+        while (end < diff.count && diff.items[end].kind != ' ')
+        {
+            if (diff.items[end].kind == '-')
+                old_count++;
+            else
+                new_count++;
+            end++;
+        }
+        appendStringInfo(&result, "@@ -%d,%d +%d,%d @@\n",
+                         old_count ? old_start + 1 : old_start, old_count,
+                         new_count ? new_start + 1 : new_start, new_count);
+        for (j = i; j < end; j++)
+        {
+            appendStringInfoChar(&result, diff.items[j].kind);
+            appendStringInfoString(&result, diff.items[j].line);
+        }
+        i = end;
     }
     PG_RETURN_TEXT_P(cstring_to_text(result.data));
+}
+
+PG_FUNCTION_INFO_V1(rcs_merge);
+Datum
+rcs_merge(PG_FUNCTION_ARGS)
+{
+    char *source = text_to_cstring(PG_GETARG_TEXT_PP(0));
+    char *base_revision = text_to_cstring(PG_GETARG_TEXT_PP(1));
+    char *ours_revision = text_to_cstring(PG_GETARG_TEXT_PP(2));
+    char *theirs_revision = text_to_cstring(PG_GETARG_TEXT_PP(3));
+    RcsArchive *archive = parse_archive(source, strlen(source));
+    char *base_text = checkout_internal(archive, base_revision);
+    char *ours_text = checkout_internal(archive, ours_revision);
+    char *theirs_text = checkout_internal(archive, theirs_revision);
+    RcsLines base_lines = {NULL, 0, 0};
+    RcsLines ours_lines = {NULL, 0, 0};
+    RcsLines theirs_lines = {NULL, 0, 0};
+    RcsDiff ours_diff = {NULL, 0, 0};
+    RcsDiff theirs_diff = {NULL, 0, 0};
+    RcsChange *ours_changes;
+    RcsChange *theirs_changes;
+    int ours_count;
+    int theirs_count;
+    int ours_index = 0;
+    int theirs_index = 0;
+    int base_index = 0;
+    bool has_conflicts = false;
+    StringInfoData merged;
+    TupleDesc tuple_desc;
+    Datum values[2];
+    bool nulls[2] = {false, false};
+    HeapTuple tuple;
+
+    split_lines(base_text, &base_lines);
+    split_lines(ours_text, &ours_lines);
+    split_lines(theirs_text, &theirs_lines);
+    compute_diff_ops(&base_lines, &ours_lines, &ours_diff);
+    compute_diff_ops(&base_lines, &theirs_lines, &theirs_diff);
+    ours_changes = diff_changes(&ours_diff, &ours_count);
+    theirs_changes = diff_changes(&theirs_diff, &theirs_count);
+    initStringInfo(&merged);
+
+    while (ours_index < ours_count || theirs_index < theirs_count)
+    {
+        bool take_ours;
+        RcsChange *next;
+        RcsChange *other = NULL;
+
+        if (ours_index >= ours_count)
+            take_ours = false;
+        else if (theirs_index >= theirs_count)
+            take_ours = true;
+        else if (ours_changes[ours_index].start !=
+                 theirs_changes[theirs_index].start)
+            take_ours = ours_changes[ours_index].start <
+                theirs_changes[theirs_index].start;
+        else
+            take_ours = ours_changes[ours_index].start ==
+                ours_changes[ours_index].end ||
+                theirs_changes[theirs_index].start !=
+                theirs_changes[theirs_index].end;
+
+        next = take_ours ? &ours_changes[ours_index]
+            : &theirs_changes[theirs_index];
+        if (take_ours && theirs_index < theirs_count)
+            other = &theirs_changes[theirs_index];
+        else if (!take_ours && ours_index < ours_count)
+            other = &ours_changes[ours_index];
+
+        if (other && change_overlaps_region(next, other->start, other->end))
+        {
+            int cluster_start = Min(next->start, other->start);
+            int cluster_end = Max(next->end, other->end);
+            int ours_first = ours_index;
+            int theirs_first = theirs_index;
+            int ours_end;
+            int theirs_end;
+            bool expanded;
+            char *ours_variant;
+            char *theirs_variant;
+
+            ours_index++;
+            theirs_index++;
+            do
+            {
+                expanded = false;
+                while (ours_index < ours_count &&
+                       change_overlaps_region(&ours_changes[ours_index],
+                                              cluster_start, cluster_end))
+                {
+                    cluster_start = Min(cluster_start,
+                                        ours_changes[ours_index].start);
+                    cluster_end = Max(cluster_end,
+                                      ours_changes[ours_index].end);
+                    ours_index++;
+                    expanded = true;
+                }
+                while (theirs_index < theirs_count &&
+                       change_overlaps_region(&theirs_changes[theirs_index],
+                                              cluster_start, cluster_end))
+                {
+                    cluster_start = Min(cluster_start,
+                                        theirs_changes[theirs_index].start);
+                    cluster_end = Max(cluster_end,
+                                      theirs_changes[theirs_index].end);
+                    theirs_index++;
+                    expanded = true;
+                }
+            } while (expanded);
+
+            ours_end = ours_index;
+            theirs_end = theirs_index;
+            append_base_lines(&merged, &base_lines, base_index,
+                              cluster_start);
+            ours_variant = merge_variant(&base_lines, ours_changes,
+                                         ours_first, ours_end,
+                                         cluster_start, cluster_end);
+            theirs_variant = merge_variant(&base_lines, theirs_changes,
+                                           theirs_first, theirs_end,
+                                           cluster_start, cluster_end);
+            if (strcmp(ours_variant, theirs_variant) == 0)
+                appendStringInfoString(&merged, ours_variant);
+            else
+            {
+                appendStringInfoString(&merged, "<<<<<<< ours\n");
+                appendStringInfoString(&merged, ours_variant);
+                appendStringInfoString(&merged, "=======\n");
+                appendStringInfoString(&merged, theirs_variant);
+                appendStringInfoString(&merged, ">>>>>>> theirs\n");
+                has_conflicts = true;
+            }
+            base_index = cluster_end;
+        }
+        else
+        {
+            append_base_lines(&merged, &base_lines, base_index, next->start);
+            append_change_lines(&merged, next);
+            base_index = next->end;
+            if (take_ours)
+                ours_index++;
+            else
+                theirs_index++;
+        }
+    }
+    append_base_lines(&merged, &base_lines, base_index, base_lines.count);
+
+    if (get_call_result_type(fcinfo, NULL, &tuple_desc) != TYPEFUNC_COMPOSITE)
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("rcs_merge must return a composite type")));
+    tuple_desc = BlessTupleDesc(tuple_desc);
+    values[0] = CStringGetTextDatum(merged.data);
+    values[1] = BoolGetDatum(has_conflicts);
+    tuple = heap_form_tuple(tuple_desc, values, nulls);
+    PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
 }
 
 PG_FUNCTION_INFO_V1(rcs_revisions);
