@@ -31,7 +31,15 @@ jobs:
             sudo pg_createcluster ${{ matrix.pg }} main
           fi
           sudo pg_ctlcluster ${{ matrix.pg }} main start
-          sudo -u postgres createuser --superuser "$USER"
+          pg_version="${{ matrix.pg }}"
+          pg_port=$(sudo pg_lsclusters --no-header |
+            awk -v version="$pg_version" '$1 == version && $2 == "main" { print $3 }')
+          if [ -z "$pg_port" ]; then
+            echo "Could not determine the PostgreSQL $pg_version cluster port" >&2
+            exit 1
+          fi
+          echo "PGPORT=$pg_port" >> "$GITHUB_ENV"
+          sudo -u postgres createuser --port="$pg_port" --superuser "$USER"
       - name: Build and install
         run: |
           make PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
