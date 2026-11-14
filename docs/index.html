@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10241f">
+  <meta name="description" content="PostRCS speichert RCS-Revisionsarchive in PostgreSQL. Installation, SQL-Beispiele und ein interaktives Browser-Playground.">
+  <title>PostRCS – RCS-Revisionen in PostgreSQL</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="#" aria-label="PostRCS Startseite">
+      <span class="brand-mark" aria-hidden="true">R</span>
+      <span>Post<span>RCS</span></span>
+    </a>
+    <nav aria-label="Hauptnavigation">
+      <a href="#ablauf">Ablauf</a>
+      <a href="#installation">Installation</a>
+      <a href="#playground">Ausprobieren</a>
+      <a href="https://github.com/matthias-reissner/postrcs">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="pulse"></span> PostgreSQL-Erweiterung · RCS-Archivformat</p>
+        <h1>Revisionsgeschichte.<br><span>Direkt in PostgreSQL.</span></h1>
+        <p class="hero-intro">PostRCS speichert Textrevisionen als native RCS-Archive in einer PostgreSQL-Spalte. Lerne den Ablauf kennen oder probiere Check-in, Checkout und Diff direkt hier aus.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="#playground">Demo ausprobieren <span aria-hidden="true">↓</span></a>
+          <a class="button button-secondary" href="#installation">Installation ansehen</a>
+        </div>
+        <div class="hero-facts" aria-label="Projektmerkmale">
+          <span><strong>01</strong> RCS-Archiv</span>
+          <span><strong>02</strong> PostgreSQL 18</span>
+          <span><strong>03</strong> Open Source</span>
+        </div>
+      </div>
+      <div class="hero-card" aria-label="Beispiel eines RCS-Revisionsverlaufs">
+        <div class="card-topline">
+          <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>README,v</span>
+          <span class="live-tag">ARCHIVE</span>
+        </div>
+        <div class="revision-flow">
+          <div class="revision-item">
+            <span class="revision-dot"></span>
+            <div><strong>1.3</strong><small>Aktuelle Revision</small></div>
+            <span class="revision-state">HEAD</span>
+          </div>
+          <div class="revision-line"></div>
+          <div class="revision-item">
+            <span class="revision-dot muted"></span>
+            <div><strong>1.2</strong><small>Dokumentation ergänzt</small></div>
+            <span class="revision-date">14:32</span>
+          </div>
+          <div class="revision-line"></div>
+          <div class="revision-item">
+            <span class="revision-dot muted"></span>
+            <div><strong>1.1</strong><small>Erste Revision</small></div>
+            <span class="revision-date">13:08</span>
+          </div>
+        </div>
+        <div class="archive-snippet">
+          <span>head 1.3;</span>
+          <span>1.3&nbsp;&nbsp;date 2026.11.14.14.32.00;</span>
+          <span>1.2&nbsp;&nbsp;next 1.1;</span>
+          <span class="snippet-accent">text @...@;</span>
+        </div>
+        <div class="card-foot"><span class="status-dot"></span> Eine Spalte. Jede Revision.</div>
+      </div>
+    </section>
+
+    <section class="section how-section" id="ablauf">
+      <div class="section-heading">
+        <p class="eyebrow">Ein kleiner, klarer Ablauf</p>
+        <h2>Von Text zu Revision – mit SQL.</h2>
+        <p>Die Anwendung steuert, wann eine Revision entsteht. Das Archiv selbst liegt als Wert in deiner Tabelle.</p>
+      </div>
+      <div class="steps-grid">
+        <article class="step-card">
+          <span class="step-number">01</span>
+          <h3>Archiv ablegen</h3>
+          <p>Eine Spalte vom Typ <code>rcs_archive</code> hält ein RCS-Archiv pro Datensatz.</p>
+          <pre><code>history rcs_archive</code></pre>
+        </article>
+        <article class="step-card">
+          <span class="step-number">02</span>
+          <h3>Änderung einchecken</h3>
+          <p><code>rcs_checkin</code> erzeugt die nächste trunk-Revision. Speichere den Rückgabewert.</p>
+          <pre><code>UPDATE docs
+SET history = rcs_checkin(
+  history, inhalt, kommentar
+);</code></pre>
+        </article>
+        <article class="step-card">
+          <span class="step-number">03</span>
+          <h3>Version abrufen</h3>
+          <p>Checkout, Metadaten und Diff sind SQL-Funktionen – direkt abfragbar.</p>
+          <pre><code>SELECT rcs_checkout(
+  history, '1.1'
+);</code></pre>
+        </article>
+      </div>
+    </section>
+
+    <section class="section install-section" id="installation">
+      <div class="section-heading">
+        <p class="eyebrow">In wenigen Schritten startklar</p>
+        <h2>Installation für PostgreSQL 18.</h2>
+        <p>Die vorkompilierte Demo ist für Windows x64 und PostgreSQL 18 gebaut. Die Extension wird anschließend in jeder Zieldatenbank einmal aktiviert.</p>
+      </div>
+      <div class="install-layout">
+        <div class="install-steps">
+          <article class="install-step">
+            <span class="step-number">01</span>
+            <div>
+              <h3>Binärpaket herunterladen</h3>
+              <p>Entpacke das Paket auf dem PostgreSQL-Server. Für andere PostgreSQL-Hauptversionen und Betriebssysteme ist ein passender Build erforderlich.</p>
+              <a class="text-link" href="https://github.com/matthias-reissner/postrcs/raw/refs/heads/main/dist/postrcs-1.0-pg18-windows-x64.zip">Windows x64 · PostgreSQL 18 herunterladen <span aria-hidden="true">↗</span></a>
+            </div>
+          </article>
+          <article class="install-step">
+            <span class="step-number">02</span>
+            <div>
+              <h3>Dateien kopieren</h3>
+              <p>In die PostgreSQL-Installationsordner kopieren. Dafür können Administratorrechte nötig sein.</p>
+              <pre class="code-block"><code>$pg = "$env:USERPROFILE\PostgreSQL\18"
+Copy-Item .\lib\postrcs.dll "$pg\lib\"
+Copy-Item .\share\extension\* `
+  "$pg\share\extension\"</code><button class="copy-button" type="button" data-copy="install-copy" aria-label="Installationsbefehle kopieren">Kopieren</button></pre>
+            </div>
+          </article>
+          <article class="install-step">
+            <span class="step-number">03</span>
+            <div>
+              <h3>In der Datenbank aktivieren</h3>
+              <p>Verbinde dich mit der Zieldatenbank und führe das SQL einmal pro Datenbank aus.</p>
+              <pre class="code-block"><code>CREATE EXTENSION postrcs;</code><button class="copy-button" type="button" data-copy="extension-copy" aria-label="CREATE EXTENSION Befehl kopieren">Kopieren</button></pre>
+            </div>
+          </article>
+        </div>
+        <aside class="install-note">
+          <div class="note-icon" aria-hidden="true">i</div>
+          <h3>Was wird installiert?</h3>
+          <ul>
+            <li><code>postrcs.dll</code> – PostgreSQL-Funktionen</li>
+            <li><code>postrcs.control</code> – Extension-Metadaten</li>
+            <li><code>postrcs--1.0.sql</code> – SQL-Typ und API</li>
+          </ul>
+          <a href="https://github.com/matthias-reissner/postrcs/blob/main/USAGE.md">Vollständige Nutzungsanleitung <span aria-hidden="true">→</span></a>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section playground-section" id="playground">
+      <div class="section-heading playground-heading">
+        <p class="eyebrow">Dein Browser-Playground</p>
+        <h2>Check-in. Checkout. Vergleichen.</h2>
+        <p>Ändere den Text, checke Revisionen ein und sieh dir den Verlauf an. Alles läuft lokal in diesem Browser.</p>
+      </div>
+      <div class="demo-disclaimer">
+        <span aria-hidden="true">✦</span>
+        <p><strong>Interaktive Simulation:</strong> Dieses Playground verbindet sich nicht mit PostgreSQL. Es bildet den Text- und trunk-Workflow nach und erzeugt eine exportierbare RCS-Archivdatei. Probiere die SQL-Funktionen in einer echten Datenbank nach der Installation aus.</p>
+      </div>
+      <div class="playground">
+        <div class="playground-main">
+          <div class="panel-heading">
+            <div>
+              <span class="panel-kicker">ARBEITSBEREICH</span>
+              <h3>Dokument bearbeiten</h3>
+            </div>
+            <span id="revision-count" class="count-pill">0 Revisionen</span>
+          </div>
+          <label for="document-content">Dateiinhalt <span>Text muss mit einem Zeilenumbruch enden</span></label>
+          <textarea id="document-content" rows="9" spellcheck="false" aria-describedby="content-hint">Willkommen bei PostRCS.
+Das ist die erste Revision.
+</textarea>
+          <label for="revision-log">Änderungskommentar</label>
+          <input id="revision-log" type="text" value="Erste Revision" maxlength="500" autocomplete="off">
+          <div class="editor-actions">
+            <button id="checkin-button" class="button button-primary" type="button">Revision einchecken <span aria-hidden="true">↗</span></button>
+            <button id="reset-button" class="button button-quiet" type="button">Zurücksetzen</button>
+          </div>
+          <p id="content-hint" class="helper-text">Der erste Check-in erzeugt 1.1; weitere Check-ins erzeugen 1.2, 1.3 usw.</p>
+          <p id="status-message" class="status-message" role="status" aria-live="polite"></p>
+        </div>
+        <aside class="playground-side">
+          <div class="panel-heading">
+            <div>
+              <span class="panel-kicker">REVISIONEN</span>
+              <h3>Verlauf ansehen</h3>
+            </div>
+          </div>
+          <label for="revision-select">Revision auswählen</label>
+          <select id="revision-select" disabled>
+            <option value="">Noch keine Revisionen</option>
+          </select>
+          <div class="editor-actions compact-actions">
+            <button id="checkout-button" class="button button-secondary" type="button" disabled>Checkout</button>
+            <button id="diff-button" class="button button-secondary" type="button" disabled>Diff zu HEAD</button>
+          </div>
+          <div class="output-block">
+            <div class="output-title"><span>ERGEBNIS</span><button id="copy-output-button" class="icon-button" type="button" aria-label="Ergebnis kopieren" disabled>Kopieren</button></div>
+            <pre id="result-output" class="result-output" tabindex="0">Checke deine erste Revision ein, um hier Inhalt oder Diff zu sehen.</pre>
+          </div>
+          <details class="archive-details">
+            <summary>RCS-Archiv anzeigen</summary>
+            <pre id="archive-output" class="archive-output">Das Archiv wird nach dem ersten Check-in erzeugt.</pre>
+            <div class="archive-actions">
+              <button id="copy-archive-button" class="button button-quiet" type="button" disabled>Archiv kopieren</button>
+              <button id="download-archive-button" class="button button-quiet" type="button" disabled>Archiv herunterladen</button>
+            </div>
+          </details>
+        </aside>
+      </div>
+    </section>
+
+    <section class="section limits-section">
+      <div class="limits-card">
+        <div>
+          <p class="eyebrow">Gut zu wissen</p>
+          <h2>Ein fokussierter erster Schritt.</h2>
+          <p>PostRCS versioniert aktuell Text auf dem trunk. Nicht-leere Inhalte brauchen einen abschließenden Zeilenumbruch. Branches und Binärdateien werden noch nicht unterstützt; der Diff zeigt die vollständigen Dateien.</p>
+        </div>
+        <a class="button button-dark" href="https://github.com/matthias-reissner/postrcs/blob/main/USAGE.md">Nutzungsanleitung öffnen <span aria-hidden="true">↗</span></a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <a class="brand brand-footer" href="#"><span class="brand-mark" aria-hidden="true">R</span><span>Post<span>RCS</span></span></a>
+    <p>RCS-Revisionen als PostgreSQL-Daten.</p>
+    <a href="https://github.com/matthias-reissner/postrcs">Quellcode auf GitHub <span aria-hidden="true">↗</span></a>
+  </footer>
+</body>
+</html>

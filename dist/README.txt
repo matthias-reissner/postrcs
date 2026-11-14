@@ -26,6 +26,7 @@ Then connect to the target database as a database administrator and run:
 
 The extension must be created separately in each database where it is used.
 The PostgreSQL server does not need to be restarted after copying the files.
+See USAGE.md in this package for SQL examples and usage details.
 
 Current limitations: check-in and checkout support trunk revisions and text
 content only. Non-empty file contents must end in a newline. Diffs include

@@ -3,6 +3,8 @@
 `postrcs` provides an `rcs_archive` domain and SQL functions for working with
 text RCS archives.
 
+Try the [interactive GitHub Pages demo](https://matthias-reissner.github.io/postrcs/).
+
 ## Build and install
 
 The extension uses PostgreSQL's PGXS build system and requires the server
@@ -50,3 +52,5 @@ RCS content must be newline-terminated when non-empty. Checkout currently
 supports trunk revisions; branch checkout and branch check-in are not
 implemented. `rcs_diff` emits a valid whole-file unified diff rather than
 minimizing changed lines.
+
+For SQL examples and a usage walkthrough, see [USAGE.md](./USAGE.md).
