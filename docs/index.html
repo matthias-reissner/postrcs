@@ -17,6 +17,7 @@
     </a>
     <nav aria-label="Hauptnavigation">
       <a href="#ablauf">Ablauf</a>
+      <a href="#sql-beispiele">SQL</a>
       <a href="#installation">Installation</a>
       <a href="#playground">Ausprobieren</a>
       <a href="https://github.com/matthias-reissner/postrcs">GitHub</a>
@@ -107,6 +108,65 @@ SET history = rcs_checkin(
       </div>
     </section>
 
+    <section class="section sql-section" id="sql-beispiele">
+      <div class="section-heading">
+        <p class="eyebrow">Direkt in PostgreSQL</p>
+        <h2>SQL-Beispiele zum Kopieren.</h2>
+        <p>Diese Beispiele laufen mit der installierten Erweiterung. Der Browser-Playground darunter ist davon unabhängig und simuliert nur den Ablauf.</p>
+      </div>
+      <div class="sql-examples-grid">
+        <article class="sql-example">
+          <h3>Archiv anlegen</h3>
+          <pre class="code-block"><code>CREATE TABLE documents (
+  id bigint GENERATED ALWAYS
+    AS IDENTITY PRIMARY KEY,
+  history rcs_archive NOT NULL
+    DEFAULT ''::rcs_archive
+);
+
+INSERT INTO documents (history)
+VALUES (rcs_checkin(
+  ''::rcs_archive,
+  E'Erste Zeile\n',
+  'Erstellung'
+));</code><button class="copy-button" type="button" data-copy="sql-create" aria-label="SQL-Beispiel Archiv anlegen kopieren">Kopieren</button></pre>
+        </article>
+        <article class="sql-example">
+          <h3>Branch und Tag</h3>
+          <pre class="code-block"><code>UPDATE documents
+SET history = rcs_create_branch(
+  history, 'feature', '1.1'
+)
+WHERE id = 1;
+
+UPDATE documents
+SET history = rcs_branch_checkin(
+  history, 'feature',
+  E'Erste Zeile\nBranch\n',
+  'Feature begonnen'
+)
+WHERE id = 1;
+
+UPDATE documents
+SET history = rcs_tag(history, 'release_1', '1.1')
+WHERE id = 1;</code><button class="copy-button" type="button" data-copy="sql-branch" aria-label="SQL-Beispiel Branch und Tag kopieren">Kopieren</button></pre>
+        </article>
+        <article class="sql-example">
+          <h3>Revisionen abfragen</h3>
+          <pre class="code-block"><code>SELECT rcs_head(history),
+       rcs_checkout(history, 'feature'),
+       rcs_diff(history, '1.1', 'feature')
+FROM documents
+WHERE id = 1;
+
+SELECT name, revision, is_branch
+FROM documents,
+     LATERAL rcs_symbols(history)
+WHERE id = 1;</code><button class="copy-button" type="button" data-copy="sql-query" aria-label="SQL-Beispiel Revisionen abfragen kopieren">Kopieren</button></pre>
+        </article>
+      </div>
+    </section>
+
     <section class="section install-section" id="installation">
       <div class="section-heading">
         <p class="eyebrow">In wenigen Schritten startklar</p>
@@ -120,7 +180,7 @@ SET history = rcs_checkin(
             <div>
               <h3>Binärpaket herunterladen</h3>
               <p>Entpacke das Paket auf dem PostgreSQL-Server. Für andere PostgreSQL-Hauptversionen und Betriebssysteme ist ein passender Build erforderlich.</p>
-              <a class="text-link" href="https://github.com/matthias-reissner/postrcs/raw/refs/heads/main/dist/postrcs-1.0-pg18-windows-x64.zip">Windows x64 · PostgreSQL 18 herunterladen <span aria-hidden="true">↗</span></a>
+              <a class="text-link" href="https://github.com/matthias-reissner/postrcs/raw/refs/heads/main/dist/postrcs-1.1-pg18-windows-x64.zip">Windows x64 · PostgreSQL 18 herunterladen <span aria-hidden="true">↗</span></a>
             </div>
           </article>
           <article class="install-step">
@@ -149,7 +209,8 @@ Copy-Item .\share\extension\* `
           <ul>
             <li><code>postrcs.dll</code> – PostgreSQL-Funktionen</li>
             <li><code>postrcs.control</code> – Extension-Metadaten</li>
-            <li><code>postrcs--1.0.sql</code> – SQL-Typ und API</li>
+            <li><code>postrcs--1.1.sql</code> – SQL-Typ und API</li>
+            <li><code>postrcs--1.0--1.1.sql</code> – Update von Version 1.0</li>
           </ul>
           <a href="https://github.com/matthias-reissner/postrcs/blob/main/USAGE.md">Vollständige Nutzungsanleitung <span aria-hidden="true">→</span></a>
         </aside>
@@ -160,11 +221,11 @@ Copy-Item .\share\extension\* `
       <div class="section-heading playground-heading">
         <p class="eyebrow">Dein Browser-Playground</p>
         <h2>Check-in. Checkout. Vergleichen.</h2>
-        <p>Ändere den Text, checke Revisionen ein und sieh dir den Verlauf an. Alles läuft lokal in diesem Browser.</p>
+        <p>Ändere den Text, checke Revisionen ein und sieh dir den Verlauf an. Deine Daten bleiben lokal in diesem Browser gespeichert.</p>
       </div>
       <div class="demo-disclaimer">
         <span aria-hidden="true">✦</span>
-        <p><strong>Interaktive Simulation:</strong> Dieses Playground verbindet sich nicht mit PostgreSQL. Es bildet den Text- und trunk-Workflow nach und erzeugt eine exportierbare RCS-Archivdatei. Probiere die SQL-Funktionen in einer echten Datenbank nach der Installation aus.</p>
+        <p><strong>Interaktive Simulation:</strong> Dieses Playground verbindet sich nicht mit PostgreSQL. Es bildet den Text- und trunk-Workflow nach und erzeugt eine exportierbare RCS-Archivdatei. Zustand und Eingaben werden nur in diesem Browser gespeichert. Probiere Branches und SQL-Funktionen in einer echten Datenbank nach der Installation aus.</p>
       </div>
       <div class="playground">
         <div class="playground-main">
@@ -224,7 +285,7 @@ Das ist die erste Revision.
         <div>
           <p class="eyebrow">Gut zu wissen</p>
           <h2>Ein fokussierter erster Schritt.</h2>
-          <p>PostRCS versioniert aktuell Text auf dem trunk. Nicht-leere Inhalte brauchen einen abschließenden Zeilenumbruch. Branches und Binärdateien werden noch nicht unterstützt; der Diff zeigt die vollständigen Dateien.</p>
+          <p>PostRCS unterstützt trunk- und Branch-Revisionen sowie Tags für Textarchive. Branches können von trunk-Revisionen erstellt werden, aber nicht verschachtelt werden. Nicht-leere Inhalte brauchen einen abschließenden Zeilenumbruch; Binärdateien werden nicht unterstützt.</p>
         </div>
         <a class="button button-dark" href="https://github.com/matthias-reissner/postrcs/blob/main/USAGE.md">Nutzungsanleitung öffnen <span aria-hidden="true">↗</span></a>
       </div>

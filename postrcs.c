@@ -33,11 +33,25 @@ typedef struct RcsRevision
     char *date;
     char *author;
     char *state;
+    char *next;
     char *log;
     char *text;
+    char **branches;
+    int branch_count;
+    Size branches_end;
+    Size next_start;
+    Size next_end;
     Size text_start;
     Size text_end;
 } RcsRevision;
+
+typedef struct RcsSymbol
+{
+    char *name;
+    char *revision;
+    Size start;
+    Size end;
+} RcsSymbol;
 
 typedef struct RcsArchive
 {
@@ -47,9 +61,19 @@ typedef struct RcsArchive
     int token_count;
     RcsRevision *revisions;
     int revision_count;
+    RcsSymbol *symbols;
+    int symbol_count;
+    Size symbols_end;
     char *description;
     int description_token;
 } RcsArchive;
+
+typedef struct RcsEdit
+{
+    Size start;
+    Size end;
+    char *replacement;
+} RcsEdit;
 
 typedef struct RcsLines
 {
@@ -218,6 +242,61 @@ take_value(RcsArchive *archive, int *index, bool must_be_quoted)
     return token->value;
 }
 
+static bool valid_symbol_name(const char *name);
+
+static void
+parse_symbols(RcsArchive *archive)
+{
+    int i;
+    int capacity = 0;
+
+    for (i = 0; i < archive->token_count; i++)
+        if (token_is(archive, i, "symbols"))
+        {
+            i++;
+            while (i < archive->token_count &&
+                   !token_is(archive, i, ";"))
+            {
+                char *entry = take_value(archive, &i, false);
+                char *separator = strchr(entry, ':');
+                RcsSymbol symbol;
+                int j;
+
+                if (separator == NULL || separator == entry ||
+                    !valid_revision_number(separator + 1) ||
+                    !valid_symbol_name(pnstrdup(entry, separator - entry)))
+                    ereport(ERROR,
+                            (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                             errmsg("invalid RCS symbolic name \"%s\"", entry)));
+                symbol.name = pnstrdup(entry, separator - entry);
+                symbol.revision = pstrdup(separator + 1);
+                symbol.start = archive->tokens[i - 1].start;
+                symbol.end = archive->tokens[i - 1].end;
+                for (j = 0; j < archive->symbol_count; j++)
+                    if (strcmp(archive->symbols[j].name, symbol.name) == 0)
+                        ereport(ERROR,
+                                (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                                 errmsg("duplicate RCS symbolic name \"%s\"",
+                                        symbol.name)));
+                if (archive->symbol_count == capacity)
+                {
+                    capacity = capacity ? capacity * 2 : 8;
+                    archive->symbols = archive->symbols
+                        ? repalloc(archive->symbols,
+                                   sizeof(RcsSymbol) * capacity)
+                        : palloc(sizeof(RcsSymbol) * capacity);
+                }
+                archive->symbols[archive->symbol_count++] = symbol;
+            }
+            if (i >= archive->token_count)
+                ereport(ERROR,
+                        (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                         errmsg("invalid RCS archive: unterminated symbols field")));
+            archive->symbols_end = archive->tokens[i].start;
+            return;
+        }
+}
+
 static RcsArchive *
 parse_archive(char *source, Size length)
 {
@@ -232,6 +311,7 @@ parse_archive(char *source, Size length)
         ereport(ERROR,
                 (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
                  errmsg("empty RCS archive")));
+    parse_symbols(archive);
 
     while (index + 1 < archive->token_count &&
            !token_is(archive, index, "desc"))
@@ -263,11 +343,38 @@ parse_archive(char *source, Size length)
         require_token(archive, &index, "branches");
         while (index < archive->token_count &&
                !token_is(archive, index, ";"))
-            index++;
+        {
+            char *branch = take_value(archive, &index, false);
+            int branch_capacity = revision.branch_count;
+
+            if (!valid_revision_number(branch))
+                ereport(ERROR,
+                        (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                         errmsg("invalid RCS branch number \"%s\"", branch)));
+            revision.branches = revision.branches
+                ? repalloc(revision.branches,
+                           sizeof(char *) * (branch_capacity + 1))
+                : palloc(sizeof(char *));
+            revision.branches[revision.branch_count++] = branch;
+        }
+        revision.branches_end = archive->tokens[index].start;
         require_token(archive, &index, ";");
         require_token(archive, &index, "next");
         if (!token_is(archive, index, ";"))
-            (void) take_value(archive, &index, false);
+        {
+            RcsToken *token = &archive->tokens[index];
+
+            revision.next = take_value(archive, &index, false);
+            revision.next_start = token->start;
+            revision.next_end = token->end;
+            if (!valid_revision_number(revision.next))
+                ereport(ERROR,
+                        (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                         errmsg("invalid RCS next revision \"%s\"",
+                                revision.next)));
+        }
+        else
+            revision.next = NULL;
         require_token(archive, &index, ";");
 
         if (archive->revision_count == capacity)
@@ -341,6 +448,67 @@ find_revision(RcsArchive *archive, const char *number)
         if (strcmp(archive->revisions[i].number, number) == 0)
             return &archive->revisions[i];
     return NULL;
+}
+
+static RcsSymbol *
+find_symbol(RcsArchive *archive, const char *name)
+{
+    int i;
+
+    for (i = 0; i < archive->symbol_count; i++)
+        if (strcmp(archive->symbols[i].name, name) == 0)
+            return &archive->symbols[i];
+    return NULL;
+}
+
+static char *
+resolve_revision_name(RcsArchive *archive, const char *name)
+{
+    RcsSymbol *symbol = find_symbol(archive, name);
+
+    return symbol ? symbol->revision : (char *) name;
+}
+
+static bool
+is_branch_number(const char *number)
+{
+    int dots = 0;
+    const char *p;
+
+    for (p = number; *p; p++)
+        if (*p == '.')
+            dots++;
+    return dots == 2;
+}
+
+static RcsRevision *
+find_branch_tip(RcsArchive *archive, const char *branch_number)
+{
+    RcsRevision *tip = NULL;
+    Size prefix_length = strlen(branch_number);
+    long tip_minor = -1;
+    int i;
+
+    for (i = 0; i < archive->revision_count; i++)
+    {
+        RcsRevision *revision = &archive->revisions[i];
+        const char *minor_text;
+        char *end;
+        long minor;
+
+        if (strncmp(revision->number, branch_number, prefix_length) != 0 ||
+            revision->number[prefix_length] != '.')
+            continue;
+        minor_text = revision->number + prefix_length + 1;
+        if (*minor_text == '\0' || strpbrk(minor_text, ".") != NULL)
+            continue;
+        minor = strtol(minor_text, &end, 10);
+        if (*end != '\0' || minor <= tip_minor)
+            continue;
+        tip_minor = minor;
+        tip = revision;
+    }
+    return tip;
 }
 
 static RcsRevision *
@@ -521,51 +689,124 @@ apply_script(const char *base, const char *script)
 static char *
 checkout_internal(RcsArchive *archive, const char *revision)
 {
-    RcsRevision *head = find_head(archive);
+    char *resolved = resolve_revision_name(archive, revision);
+    RcsRevision *head;
+    RcsRevision *target;
     RcsRevision *current;
     char *contents;
     int steps = 0;
 
-    if (!is_trunk_revision(revision))
+    if (is_branch_number(resolved))
+    {
+        head = find_branch_tip(archive, resolved);
+        if (head == NULL)
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                     errmsg("branch \"%s\" has no revisions", revision)));
+        resolved = head->number;
+    }
+    else if (is_trunk_revision(resolved))
+        head = find_head(archive);
+    else
+    {
+        char *branch_number = pstrdup(resolved);
+        char *last_dot = strrchr(branch_number, '.');
+
+        if (last_dot == NULL || last_dot == branch_number)
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                     errmsg("invalid revision number \"%s\"", revision)));
+        *last_dot = '\0';
+        head = find_branch_tip(archive, branch_number);
+        if (head == NULL)
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                     errmsg("branch revision \"%s\" was not found", revision)));
+    }
+    target = find_revision(archive, resolved);
+    if (target == NULL)
         ereport(ERROR,
-                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-                 errmsg("checkout currently supports trunk revisions only")));
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("revision \"%s\" was not found", revision)));
     current = head;
     contents = current->text;
-    while (strcmp(current->number, revision) != 0)
+    while (current != target)
     {
-        int i;
-        char *next_number = NULL;
-
-        if (++steps > archive->revision_count)
+        if (++steps > archive->revision_count || current->next == NULL)
             break;
-        for (i = 0; i < archive->token_count - 1; i++)
-            if (token_is(archive, i, current->number) &&
-                token_is(archive, i + 1, "date"))
-            {
-                int j;
-                for (j = i + 1; j < archive->token_count &&
-                     !token_is(archive, j, "next"); j++)
-                    ;
-                if (j + 1 < archive->token_count &&
-                    !token_is(archive, j + 1, ";"))
-                    next_number = archive->tokens[j + 1].value;
-                break;
-            }
-        if (next_number == NULL)
-            break;
-        current = find_revision(archive, next_number);
+        current = find_revision(archive, current->next);
         if (current == NULL)
             ereport(ERROR,
                     (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-                     errmsg("RCS trunk references a missing revision")));
+                     errmsg("RCS revision chain references a missing revision")));
         contents = apply_script(contents, current->text);
     }
-    if (strcmp(current->number, revision) != 0)
+    if (current != target)
         ereport(ERROR,
                 (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
                  errmsg("revision \"%s\" was not found", revision)));
     return contents;
+}
+
+static void
+validate_archive(RcsArchive *archive)
+{
+    int i;
+
+    (void) find_head(archive);
+    for (i = 0; i < archive->revision_count; i++)
+    {
+        RcsRevision *revision = &archive->revisions[i];
+        int j;
+
+        if (revision->next && find_revision(archive, revision->next) == NULL)
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                     errmsg("RCS revision \"%s\" references missing next revision \"%s\"",
+                            revision->number, revision->next)));
+        for (j = 0; j < revision->branch_count; j++)
+        {
+            RcsRevision *child = find_revision(archive,
+                                                revision->branches[j]);
+            Size parent_length = strlen(revision->number);
+
+            if (child == NULL ||
+                strncmp(child->number, revision->number, parent_length) != 0 ||
+                child->number[parent_length] != '.')
+                ereport(ERROR,
+                        (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                         errmsg("RCS revision \"%s\" references invalid branch \"%s\"",
+                                revision->number, revision->branches[j])));
+        }
+        (void) checkout_internal(archive, revision->number);
+    }
+
+    for (i = 0; i < archive->symbol_count; i++)
+    {
+        RcsSymbol *symbol = &archive->symbols[i];
+
+        if (is_branch_number(symbol->revision))
+        {
+            char *parent_number = pstrdup(symbol->revision);
+            char *last_dot = strrchr(parent_number, '.');
+
+            if (last_dot == NULL)
+                ereport(ERROR,
+                        (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                         errmsg("invalid branch symbol \"%s\"", symbol->name)));
+            *last_dot = '\0';
+            if (find_revision(archive, parent_number) == NULL)
+                ereport(ERROR,
+                        (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                         errmsg("branch symbol \"%s\" references missing parent revision",
+                                symbol->name)));
+        }
+        else if (find_revision(archive, symbol->revision) == NULL)
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                     errmsg("RCS symbol \"%s\" references missing revision \"%s\"",
+                            symbol->name, symbol->revision)));
+    }
 }
 
 static char *
@@ -592,16 +833,29 @@ append_edit_script(StringInfo result, const char *old_contents,
 {
     RcsLines old_lines = {NULL, 0, 0};
     RcsLines new_lines = {NULL, 0, 0};
+    int prefix = 0;
+    int suffix = 0;
     int i;
 
     split_lines(old_contents, &old_lines);
     split_lines(new_contents, &new_lines);
-    if (new_lines.count)
-        appendStringInfo(result, "d1 %d\n", new_lines.count);
-    if (old_lines.count)
+    while (prefix < old_lines.count && prefix < new_lines.count &&
+           strcmp(old_lines.items[prefix], new_lines.items[prefix]) == 0)
+        prefix++;
+    while (suffix < old_lines.count - prefix &&
+           suffix < new_lines.count - prefix &&
+           strcmp(old_lines.items[old_lines.count - suffix - 1],
+                  new_lines.items[new_lines.count - suffix - 1]) == 0)
+        suffix++;
+
+    if (new_lines.count - prefix - suffix > 0)
+        appendStringInfo(result, "d%d %d\n", prefix + 1,
+                         new_lines.count - prefix - suffix);
+    if (old_lines.count - prefix - suffix > 0)
     {
-        appendStringInfo(result, "a0 %d\n", old_lines.count);
-        for (i = 0; i < old_lines.count; i++)
+        appendStringInfo(result, "a%d %d\n", prefix,
+                         old_lines.count - prefix - suffix);
+        for (i = prefix; i < old_lines.count - suffix; i++)
             appendStringInfoString(result, old_lines.items[i]);
     }
 }
@@ -632,6 +886,116 @@ append_quoted(StringInfo result, const char *value)
     appendStringInfoString(result, quoted);
 }
 
+static int
+compare_edits(const void *left, const void *right)
+{
+    const RcsEdit *a = (const RcsEdit *) left;
+    const RcsEdit *b = (const RcsEdit *) right;
+
+    if (a->start < b->start)
+        return -1;
+    if (a->start > b->start)
+        return 1;
+    return 0;
+}
+
+static char *
+apply_edits(const char *source, Size length, RcsEdit *edits, int count)
+{
+    StringInfoData result;
+    Size position = 0;
+    int i;
+
+    qsort(edits, count, sizeof(RcsEdit), compare_edits);
+    initStringInfo(&result);
+    for (i = 0; i < count; i++)
+    {
+        if (edits[i].start < position || edits[i].end < edits[i].start ||
+            edits[i].end > length)
+            ereport(ERROR,
+                    (errcode(ERRCODE_INTERNAL_ERROR),
+                     errmsg("overlapping edits in RCS archive")));
+        appendBinaryStringInfo(&result, source + position,
+                               edits[i].start - position);
+        appendStringInfoString(&result, edits[i].replacement);
+        position = edits[i].end;
+    }
+    appendBinaryStringInfo(&result, source + position, length - position);
+    return result.data;
+}
+
+static bool
+valid_symbol_name(const char *name)
+{
+    const unsigned char *p = (const unsigned char *) name;
+
+    if (*p == '\0' || !(isalpha(*p) || *p == '_'))
+        return false;
+    for (p++; *p; p++)
+        if (!(isalnum(*p) || *p == '_' || *p == '-'))
+            return false;
+    return true;
+}
+
+static void
+set_symbol_edit(RcsArchive *archive, const char *name, const char *revision,
+                RcsEdit *edit)
+{
+    RcsSymbol *existing = find_symbol(archive, name);
+    char *value = psprintf("%s:%s", name, revision);
+
+    if (existing)
+    {
+        edit->start = existing->start;
+        edit->end = existing->end;
+        edit->replacement = value;
+    }
+    else
+    {
+        if (archive->symbols_end == 0)
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                     errmsg("RCS archive has no symbols field")));
+        edit->start = archive->symbols_end;
+        edit->end = archive->symbols_end;
+        edit->replacement = psprintf(" %s", value);
+    }
+}
+
+static bool
+parent_has_branch(RcsRevision *parent, const char *branch_revision)
+{
+    int i;
+
+    for (i = 0; i < parent->branch_count; i++)
+        if (strcmp(parent->branches[i], branch_revision) == 0)
+            return true;
+    return false;
+}
+
+static void
+validate_checkin_content(const char *contents)
+{
+    Size length = strlen(contents);
+
+    if (length > 0 && contents[length - 1] != '\n')
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("RCS text must end with a newline")));
+}
+
+static void
+validate_author(const char *author)
+{
+    const unsigned char *p;
+
+    for (p = (const unsigned char *) author; *p; p++)
+        if (isspace(*p) || *p == ';' || *p == '@')
+            ereport(ERROR,
+                    (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                     errmsg("database role name cannot be represented in an RCS author field")));
+}
+
 PG_FUNCTION_INFO_V1(rcs_is_valid);
 Datum
 rcs_is_valid(PG_FUNCTION_ARGS)
@@ -639,20 +1003,28 @@ rcs_is_valid(PG_FUNCTION_ARGS)
     text *input = PG_GETARG_TEXT_PP(0);
     char *source = text_to_cstring(input);
     bool valid = true;
+    MemoryContext oldcontext = CurrentMemoryContext;
 
     if (VARSIZE_ANY_EXHDR(input) == 0)
         PG_RETURN_BOOL(true);
 
     PG_TRY();
     {
-        (void) parse_archive(source, strlen(source));
+        RcsArchive *archive = parse_archive(source, strlen(source));
+
+        validate_archive(archive);
     }
     PG_CATCH();
     {
-        ErrorData *error = CopyErrorData();
+        ErrorData *error;
+
+        MemoryContextSwitchTo(oldcontext);
+        error = CopyErrorData();
 
         FlushErrorState();
-        if (error->sqlerrcode != ERRCODE_INVALID_TEXT_REPRESENTATION)
+        if (error->sqlerrcode != ERRCODE_INVALID_TEXT_REPRESENTATION &&
+            error->sqlerrcode != ERRCODE_INVALID_PARAMETER_VALUE &&
+            error->sqlerrcode != ERRCODE_FEATURE_NOT_SUPPORTED)
             ReThrowError(error);
         FreeErrorData(error);
         valid = false;
@@ -684,16 +1056,10 @@ rcs_checkin(PG_FUNCTION_ARGS)
     char *date = format_rcs_date();
     StringInfoData output;
     char *new_number;
-    const unsigned char *author_char;
     RcsArchive *archive = NULL;
     RcsRevision *head = NULL;
 
-    for (author_char = (const unsigned char *) author; *author_char;
-         author_char++)
-        if (isspace(*author_char) || *author_char == ';' || *author_char == '@')
-            ereport(ERROR,
-                    (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-                     errmsg("database role name cannot be represented in an RCS author field")));
+    validate_author(author);
 
     if (VARSIZE_ANY_EXHDR(archive_arg) > 0)
     {
@@ -725,10 +1091,7 @@ rcs_checkin(PG_FUNCTION_ARGS)
     else
         new_number = pstrdup("1.1");
 
-    if (contents[0] != '\0' && contents[strlen(contents) - 1] != '\n')
-        ereport(ERROR,
-                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-                 errmsg("RCS text must end with a newline")));
+    validate_checkin_content(contents);
 
     initStringInfo(&output);
     if (archive == NULL)
@@ -793,6 +1156,253 @@ rcs_checkin(PG_FUNCTION_ARGS)
     PG_RETURN_TEXT_P(cstring_to_text(output.data));
 }
 
+PG_FUNCTION_INFO_V1(rcs_head);
+Datum
+rcs_head(PG_FUNCTION_ARGS)
+{
+    char *source = text_to_cstring(PG_GETARG_TEXT_PP(0));
+    RcsArchive *archive = parse_archive(source, strlen(source));
+
+    PG_RETURN_TEXT_P(cstring_to_text(find_head(archive)->number));
+}
+
+PG_FUNCTION_INFO_V1(rcs_resolve_revision);
+Datum
+rcs_resolve_revision(PG_FUNCTION_ARGS)
+{
+    char *source = text_to_cstring(PG_GETARG_TEXT_PP(0));
+    char *name = text_to_cstring(PG_GETARG_TEXT_PP(1));
+    RcsArchive *archive = parse_archive(source, strlen(source));
+    char *resolved = resolve_revision_name(archive, name);
+    RcsSymbol *symbol = find_symbol(archive, name);
+
+    if (!find_revision(archive, resolved) &&
+        !(is_branch_number(resolved) &&
+          ((symbol && is_branch_number(symbol->revision)) ||
+           find_branch_tip(archive, resolved))))
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("revision or symbol \"%s\" was not found", name)));
+    PG_RETURN_TEXT_P(cstring_to_text(resolved));
+}
+
+PG_FUNCTION_INFO_V1(rcs_create_branch);
+Datum
+rcs_create_branch(PG_FUNCTION_ARGS)
+{
+    text *archive_arg = PG_GETARG_TEXT_PP(0);
+    char *source = text_to_cstring(archive_arg);
+    char *name = text_to_cstring(PG_GETARG_TEXT_PP(1));
+    char *parent_number = text_to_cstring(PG_GETARG_TEXT_PP(2));
+    RcsArchive *archive;
+    RcsRevision *parent;
+    RcsSymbol *existing;
+    char *resolved;
+    char *prefix;
+    long next_branch = 1;
+    char *branch_number;
+    RcsEdit edit;
+    int i;
+
+    if (VARSIZE_ANY_EXHDR(archive_arg) == 0)
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("cannot create a branch in an empty archive")));
+    if (!valid_symbol_name(name))
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_NAME),
+                 errmsg("invalid RCS branch name \"%s\"", name)));
+    archive = parse_archive(source, strlen(source));
+    existing = find_symbol(archive, name);
+    if (existing)
+        ereport(ERROR,
+                (errcode(ERRCODE_DUPLICATE_OBJECT),
+                 errmsg("RCS symbol \"%s\" already exists", name)));
+    resolved = resolve_revision_name(archive, parent_number);
+    parent = find_revision(archive, resolved);
+    if (parent == NULL || !is_trunk_revision(resolved))
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("branches can currently be created only from trunk revisions")));
+
+    prefix = psprintf("%s.", parent->number);
+    for (i = 0; i < parent->branch_count; i++)
+    {
+        const char *suffix;
+        char *end;
+        long branch_id;
+
+        if (strncmp(parent->branches[i], prefix, strlen(prefix)) != 0)
+            continue;
+        suffix = parent->branches[i] + strlen(prefix);
+        branch_id = strtol(suffix, &end, 10);
+        if (end == suffix || (*end != '.' && *end != '\0'))
+            continue;
+        if (branch_id >= next_branch && branch_id < INT_MAX)
+            next_branch = branch_id + 1;
+    }
+    branch_number = psprintf("%s%ld", prefix, next_branch);
+    set_symbol_edit(archive, name, branch_number, &edit);
+    PG_RETURN_TEXT_P(cstring_to_text(
+        apply_edits(source, archive->length, &edit, 1)));
+}
+
+PG_FUNCTION_INFO_V1(rcs_tag);
+Datum
+rcs_tag(PG_FUNCTION_ARGS)
+{
+    text *archive_arg = PG_GETARG_TEXT_PP(0);
+    char *source = text_to_cstring(archive_arg);
+    char *name = text_to_cstring(PG_GETARG_TEXT_PP(1));
+    char *revision_name = text_to_cstring(PG_GETARG_TEXT_PP(2));
+    RcsArchive *archive;
+    char *revision;
+    RcsEdit edit;
+
+    if (VARSIZE_ANY_EXHDR(archive_arg) == 0)
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("cannot tag a revision in an empty archive")));
+    if (!valid_symbol_name(name))
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_NAME),
+                 errmsg("invalid RCS tag name \"%s\"", name)));
+    archive = parse_archive(source, strlen(source));
+    revision = resolve_revision_name(archive, revision_name);
+    if (!find_revision(archive, revision) &&
+        !(is_branch_number(revision) && find_branch_tip(archive, revision)))
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("revision or symbol \"%s\" was not found",
+                        revision_name)));
+    {
+        RcsSymbol *existing = find_symbol(archive, name);
+
+        if (existing && is_branch_number(existing->revision))
+            ereport(ERROR,
+                    (errcode(ERRCODE_DUPLICATE_OBJECT),
+                     errmsg("RCS symbol \"%s\" is a branch and cannot be replaced by a tag",
+                            name)));
+    }
+    set_symbol_edit(archive, name, revision, &edit);
+    PG_RETURN_TEXT_P(cstring_to_text(
+        apply_edits(source, archive->length, &edit, 1)));
+}
+
+PG_FUNCTION_INFO_V1(rcs_branch_checkin);
+Datum
+rcs_branch_checkin(PG_FUNCTION_ARGS)
+{
+    text *archive_arg = PG_GETARG_TEXT_PP(0);
+    char *source = text_to_cstring(archive_arg);
+    char *branch_name = text_to_cstring(PG_GETARG_TEXT_PP(1));
+    char *contents = text_to_cstring(PG_GETARG_TEXT_PP(2));
+    char *log = text_to_cstring(PG_GETARG_TEXT_PP(3));
+    char *author = GetUserNameFromId(GetUserId(), false);
+    char *date = format_rcs_date();
+    RcsArchive *archive;
+    RcsSymbol *symbol;
+    RcsRevision *parent;
+    RcsRevision *branch_head;
+    char *branch_number;
+    char *parent_number;
+    char *new_number;
+    char *new_text;
+    StringInfoData metadata;
+    StringInfoData delta;
+    RcsEdit edits[2];
+    int edit_count = 0;
+    char *updated_source;
+
+    if (VARSIZE_ANY_EXHDR(archive_arg) == 0)
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("cannot check in to a branch in an empty archive")));
+    validate_checkin_content(contents);
+    validate_author(author);
+    archive = parse_archive(source, strlen(source));
+    symbol = find_symbol(archive, branch_name);
+    if (symbol == NULL || !is_branch_number(symbol->revision))
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                 errmsg("branch \"%s\" does not exist", branch_name),
+                 errhint("Create it first with rcs_create_branch.")));
+    branch_number = symbol->revision;
+    parent_number = pstrdup(branch_number);
+    {
+        char *last_dot = strrchr(parent_number, '.');
+
+        if (last_dot == NULL)
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                     errmsg("invalid RCS branch number \"%s\"", branch_number)));
+        *last_dot = '\0';
+    }
+    parent = find_revision(archive, parent_number);
+    if (parent == NULL)
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                 errmsg("branch \"%s\" references missing parent revision \"%s\"",
+                        branch_name, parent_number)));
+    branch_head = find_branch_tip(archive, branch_number);
+    if (branch_head == NULL)
+    {
+        new_number = psprintf("%s.1", branch_number);
+        if (!parent_has_branch(parent, new_number))
+        {
+            edits[edit_count].start = parent->branches_end;
+            edits[edit_count].end = parent->branches_end;
+            edits[edit_count++].replacement = psprintf(" %s", new_number);
+        }
+    }
+    else
+    {
+        char *minor_text = branch_head->number +
+            strlen(branch_number) + 1;
+        char *end;
+        long minor = strtol(minor_text, &end, 10);
+
+        if (*end != '\0' || minor <= 0 || minor >= INT_MAX)
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                     errmsg("invalid branch revision number \"%s\"",
+                            branch_head->number)));
+        new_number = psprintf("%s.%ld", branch_number, minor + 1);
+        {
+            char *previous = checkout_internal(archive, branch_head->number);
+            StringInfoData reverse_script;
+
+            initStringInfo(&reverse_script);
+            append_edit_script(&reverse_script, previous, contents);
+            edits[edit_count].start = branch_head->text_start;
+            edits[edit_count].end = branch_head->text_end;
+            edits[edit_count++].replacement = quote_rcs(reverse_script.data);
+        }
+    }
+
+    initStringInfo(&metadata);
+    appendStringInfo(&metadata, "%s\ndate %s; author %s; state Exp;\n"
+                     "branches;\nnext %s;\n\n",
+                     new_number, date, author,
+                     branch_head ? branch_head->number : "");
+    edits[edit_count].start =
+        archive->tokens[archive->description_token].start;
+    edits[edit_count].end = edits[edit_count].start;
+    edits[edit_count++].replacement = metadata.data;
+    updated_source = apply_edits(source, archive->length, edits, edit_count);
+
+    initStringInfo(&delta);
+    appendStringInfo(&delta, "\n%s\nlog\n", new_number);
+    append_quoted(&delta, log);
+    appendStringInfoString(&delta, "\ntext\n");
+    append_quoted(&delta, contents);
+    appendStringInfoChar(&delta, '\n');
+    new_text = palloc(strlen(updated_source) + delta.len + 1);
+    memcpy(new_text, updated_source, strlen(updated_source));
+    memcpy(new_text + strlen(updated_source), delta.data, delta.len + 1);
+    PG_RETURN_TEXT_P(cstring_to_text(new_text));
+}
+
 PG_FUNCTION_INFO_V1(rcs_diff);
 Datum
 rcs_diff(PG_FUNCTION_ARGS)
@@ -806,6 +1416,8 @@ rcs_diff(PG_FUNCTION_ARGS)
     StringInfoData result;
     RcsLines left_lines = {NULL, 0, 0};
     RcsLines right_lines = {NULL, 0, 0};
+    int prefix = 0;
+    int suffix = 0;
     int i;
 
     initStringInfo(&result);
@@ -814,16 +1426,29 @@ rcs_diff(PG_FUNCTION_ARGS)
 
     split_lines(left, &left_lines);
     split_lines(right, &right_lines);
+    while (prefix < left_lines.count && prefix < right_lines.count &&
+           strcmp(left_lines.items[prefix], right_lines.items[prefix]) == 0)
+        prefix++;
+    while (suffix < left_lines.count - prefix &&
+           suffix < right_lines.count - prefix &&
+           strcmp(left_lines.items[left_lines.count - suffix - 1],
+                  right_lines.items[right_lines.count - suffix - 1]) == 0)
+        suffix++;
+
     appendStringInfo(&result, "--- %s\n+++ %s\n@@ -%d,%d +%d,%d @@\n",
                      left_revision, right_revision,
-                     left_lines.count ? 1 : 0, left_lines.count,
-                     right_lines.count ? 1 : 0, right_lines.count);
-    for (i = 0; i < left_lines.count; i++)
+                     left_lines.count - prefix - suffix
+                         ? prefix + 1 : prefix,
+                     left_lines.count - prefix - suffix,
+                     right_lines.count - prefix - suffix
+                         ? prefix + 1 : prefix,
+                     right_lines.count - prefix - suffix);
+    for (i = prefix; i < left_lines.count - suffix; i++)
     {
         appendStringInfoChar(&result, '-');
         appendStringInfoString(&result, left_lines.items[i]);
     }
-    for (i = 0; i < right_lines.count; i++)
+    for (i = prefix; i < right_lines.count - suffix; i++)
     {
         appendStringInfoChar(&result, '+');
         appendStringInfoString(&result, right_lines.items[i]);
@@ -881,4 +1506,51 @@ rcs_revisions(PG_FUNCTION_ARGS)
         MemoryContextSwitchTo(oldcontext);
         PG_RETURN_NULL();
     }
+}
+
+PG_FUNCTION_INFO_V1(rcs_symbols);
+Datum
+rcs_symbols(PG_FUNCTION_ARGS)
+{
+    ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+    MemoryContext oldcontext;
+    TupleDesc tupledesc;
+    Tuplestorestate *store;
+    char *source;
+    RcsArchive *archive;
+    int i;
+
+    if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo) ||
+        !(rsinfo->allowedModes & SFRM_Materialize))
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("materialized set mode is required")));
+    oldcontext = MemoryContextSwitchTo(rsinfo->econtext->ecxt_per_query_memory);
+    source = text_to_cstring(PG_GETARG_TEXT_PP(0));
+    archive = parse_archive(source, strlen(source));
+    if (get_call_result_type(fcinfo, NULL, &tupledesc) != TYPEFUNC_COMPOSITE)
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                 errmsg("rcs_symbols must be called in a record context")));
+    tupledesc = BlessTupleDesc(tupledesc);
+    store = tuplestore_begin_heap(true, false, work_mem);
+    for (i = 0; i < archive->symbol_count; i++)
+    {
+        Datum values[3];
+        bool nulls[3] = {false, false, false};
+        HeapTuple tuple;
+        RcsSymbol *symbol = &archive->symbols[i];
+
+        values[0] = CStringGetTextDatum(symbol->name);
+        values[1] = CStringGetTextDatum(symbol->revision);
+        values[2] = BoolGetDatum(is_branch_number(symbol->revision));
+        tuple = heap_form_tuple(tupledesc, values, nulls);
+        tuplestore_puttuple(store, tuple);
+        heap_freetuple(tuple);
+    }
+    rsinfo->returnMode = SFRM_Materialize;
+    rsinfo->setResult = store;
+    rsinfo->setDesc = tupledesc;
+    MemoryContextSwitchTo(oldcontext);
+    PG_RETURN_NULL();
 }

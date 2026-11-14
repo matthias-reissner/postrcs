@@ -1,0 +1,70 @@
+name: Windows package
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: true
+          install: make
+      - name: Install PostgreSQL 18 build files
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP "postgresql-18.0-1-windows-x64.exe"
+          Invoke-WebRequest `
+            -Uri "https://get.enterprisedb.com/postgresql/postgresql-18.0-1-windows-x64.exe" `
+            -OutFile $installer
+          $arguments = @(
+            "--mode", "unattended",
+            "--unattendedmodeui", "none",
+            "--prefix", "C:\PostgreSQL\18",
+            "--datadir", "C:\PostgreSQL\18\data",
+            "--serverport", "55432",
+            "--superpassword", "PostRCS-CI-Only-18",
+            "--servicename", "postgresql-x64-18"
+          )
+          $process = Start-Process -FilePath $installer `
+            -ArgumentList $arguments -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "PostgreSQL installer exited with code $($process.ExitCode)."
+          }
+      - name: Build and package
+        shell: pwsh
+        run: |
+          $pgRoot = "C:\PostgreSQL\18"
+          $env:PATH = "$pgRoot\bin;$env:PATH"
+          make clean all "PG_CONFIG=$pgRoot\bin\pg_config.exe"
+          if ($LASTEXITCODE -ne 0) {
+            throw "PostRCS build failed with code $LASTEXITCODE."
+          }
+          make install "PG_CONFIG=$pgRoot\bin\pg_config.exe"
+          if ($LASTEXITCODE -ne 0) {
+            throw "PostRCS install failed with code $LASTEXITCODE."
+          }
+          ./scripts/package-windows.ps1 -PgRoot $pgRoot -Version 1.1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: postrcs-1.1-pg18-windows-x64
+          path: |
+            dist/postrcs-1.1-pg18-windows-x64.zip
+            dist/postrcs-1.1-pg18-windows-x64.sha256
+          if-no-files-found: error
+      - name: Attach package to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ github.event.release.tag_name }} dist/postrcs-1.1-pg18-windows-x64.zip dist/postrcs-1.1-pg18-windows-x64.sha256 --clobber

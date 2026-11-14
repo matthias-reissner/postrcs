@@ -16,9 +16,11 @@
 
   const initialContent = contentInput.value;
   const emptyMessage = "Checke deine erste Revision ein, um hier Inhalt oder Diff zu sehen.";
+  const storageKey = "postrcs-playground-v1";
   let revisions = [];
   let archiveText = "";
   let outputText = "";
+  let selectedRevision = "";
 
   function splitLines(value) {
     if (value === "") {
@@ -148,6 +150,66 @@
     statusMessage.classList.toggle("error", isError);
   }
 
+  function saveState() {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({
+        revisions,
+        outputText,
+        documentContent: contentInput.value,
+        revisionLog: logInput.value,
+        selectedRevision: revisionSelect.value
+      }));
+    } catch (error) {
+      announce(`Der lokale Playground-Stand konnte nicht gespeichert werden: ${error.message}`, true);
+    }
+  }
+
+  function restoreState() {
+    let saved;
+    let stored;
+
+    try {
+      stored = localStorage.getItem(storageKey);
+      if (stored === null) {
+        return false;
+      }
+      saved = JSON.parse(stored);
+      if (!saved || !Array.isArray(saved.revisions) ||
+          saved.revisions.length > 1000 ||
+          typeof saved.documentContent !== "string" ||
+          typeof saved.revisionLog !== "string" ||
+          typeof saved.outputText !== "string") {
+        throw new Error("Ungültiges gespeichertes Datenformat.");
+      }
+      saved.revisions.forEach((revision) => {
+        if (!revision || typeof revision.number !== "string" ||
+            !/^1\.\d+$/.test(revision.number) ||
+            typeof revision.date !== "string" ||
+            typeof revision.author !== "string" ||
+            typeof revision.state !== "string" ||
+            typeof revision.log !== "string" ||
+            typeof revision.text !== "string") {
+          throw new Error("Eine gespeicherte Revision ist ungültig.");
+        }
+        splitLines(revision.text);
+      });
+      if (saved.selectedRevision !== undefined &&
+          typeof saved.selectedRevision !== "string") {
+        throw new Error("Die gespeicherte Auswahl ist ungültig.");
+      }
+    } catch (error) {
+      announce(`Der lokale Playground-Stand konnte nicht geladen werden: ${error.message}`, true);
+      return false;
+    }
+
+    revisions = saved.revisions;
+    outputText = saved.outputText;
+    contentInput.value = saved.documentContent;
+    logInput.value = saved.revisionLog;
+    selectedRevision = saved.selectedRevision || "";
+    return true;
+  }
+
   function updateView() {
     archiveText = serializeArchive();
     archiveOutput.textContent = archiveText || "Das Archiv wird nach dem ersten Check-in erzeugt.";
@@ -166,6 +228,9 @@
         option.textContent = `${revision.number} · ${revision.log || "ohne Kommentar"}`;
         revisionSelect.append(option);
       });
+      if (revisions.some((revision) => revision.number === selectedRevision)) {
+        revisionSelect.value = selectedRevision;
+      }
     }
 
     revisionSelect.disabled = revisions.length === 0;
@@ -224,7 +289,9 @@
       resultOutput.textContent = nextContent || "(Leere Datei)";
       updateView();
       revisionSelect.value = revisions[0].number;
+      selectedRevision = revisionSelect.value;
       logInput.value = "";
+      saveState();
       announce(`Revision ${revisions[0].number} wurde lokal eingecheckt.`);
     } catch (error) {
       announce(error.message, true);
@@ -237,6 +304,8 @@
       outputText = checkout(revisionNumber);
       resultOutput.textContent = outputText || "(Leere Datei)";
       copyOutputButton.disabled = false;
+      selectedRevision = revisionNumber;
+      saveState();
       announce(`Revision ${revisionNumber} ausgecheckt.`);
     } catch (error) {
       announce(error.message, true);
@@ -255,6 +324,8 @@
       );
       resultOutput.textContent = outputText || "(Keine Unterschiede)";
       copyOutputButton.disabled = !outputText;
+      selectedRevision = fromRevision;
+      saveState();
       announce(`Diff zwischen ${fromRevision} und HEAD ${headRevision}.`);
     } catch (error) {
       announce(error.message, true);
@@ -269,8 +340,17 @@
     logInput.value = "Erste Revision";
     resultOutput.textContent = emptyMessage;
     updateView();
-    announce("Playground zurückgesetzt. Deine Daten bleiben nur in diesem Browser.");
+    selectedRevision = "";
+    try {
+      localStorage.removeItem(storageKey);
+      announce("Playground zurückgesetzt. Deine Daten bleiben nur in diesem Browser.");
+    } catch (error) {
+      announce(`Playground zurückgesetzt, aber der gespeicherte Stand konnte nicht gelöscht werden: ${error.message}`, true);
+    }
   });
+
+  contentInput.addEventListener("input", saveState);
+  logInput.addEventListener("input", saveState);
 
   async function copyText(value, successMessage) {
     try {
@@ -310,5 +390,9 @@
     announce("RCS-Archiv wurde heruntergeladen.");
   });
 
+  const restored = restoreState();
   updateView();
+  if (restored) {
+    announce("Der letzte Playground-Stand wurde aus diesem Browser geladen.");
+  }
 })();

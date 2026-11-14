@@ -21,6 +21,13 @@ FROM pg_extension
 WHERE extname = 'postrcs';
 ```
 
+Nach Installation der 1.1-Dateien aktualisierst du eine bestehende 1.0-
+Installation einmal pro Datenbank:
+
+```sql
+ALTER EXTENSION postrcs UPDATE;
+```
+
 ## Tabelle und erste Revision
 
 Eine `rcs_archive`-Spalte kann ein Archiv pro Datensatz aufnehmen:
@@ -70,10 +77,12 @@ Werte.
 
 ## Revisionen auslesen
 
-Die aktuelle Revision kann mit ihrer Nummer ausgecheckt werden:
+Die aktuelle trunk-Revision liefert `rcs_head`. Eine Revision kann mit ihrer
+Nummer oder einem symbolischen Namen ausgecheckt werden:
 
 ```sql
-SELECT rcs_checkout(history, '1.1') AS content
+SELECT rcs_head(history) AS head,
+       rcs_checkout(history, '1.1') AS content
 FROM documents
 WHERE id = 1;
 ```
@@ -97,7 +106,60 @@ FROM documents
 WHERE id = 1;
 ```
 
-Gleiche Inhalte ergeben einen leeren Diff.
+Namen lassen sich mit `rcs_resolve_revision` auflösen. Gleiche Inhalte
+ergeben einen leeren Diff. Der Diff und die gespeicherten Deltas erhalten
+gemeinsame Präfixe und Suffixe; mehrere getrennte Änderungen können weiterhin
+als ein größerer Änderungsbereich dargestellt werden.
+
+## Branches und Tags
+
+Ein benannter Branch wird von einer bestehenden trunk-Revision abgezweigt.
+Danach wird jede Branch-Revision mit `rcs_branch_checkin` eingecheckt:
+
+```sql
+UPDATE documents
+SET history = rcs_create_branch(history, 'feature', '1.2')
+WHERE id = 1;
+
+UPDATE documents
+SET history = rcs_branch_checkin(
+    history,
+    'feature',
+    E'Erste Zeile\nBranch-Änderung\n',
+    'Feature begonnen'
+)
+WHERE id = 1;
+```
+
+Wiederhole den zweiten Aufruf für weitere Revisionen desselben Branches.
+`rcs_checkout(history, 'feature')` liefert dessen aktuelle Revision;
+einzelne Branch-Revisionen wie `1.2.1.1` lassen sich ebenfalls auschecken.
+Verschachtelte Branches werden derzeit nicht unterstützt.
+
+Ein Tag benennt eine bestehende Revision. Tags können aktualisiert werden;
+Branch-Namen bleiben Branch-Verweise:
+
+```sql
+UPDATE documents
+SET history = rcs_tag(history, 'release_1_2', '1.2')
+WHERE id = 1;
+
+SELECT rcs_checkout(history, 'release_1_2')
+FROM documents
+WHERE id = 1;
+```
+
+Alle Symbole und ihre Ziele lassen sich abfragen:
+
+```sql
+SELECT name, revision, is_branch
+FROM documents,
+     LATERAL rcs_symbols(history)
+WHERE id = 1;
+```
+
+`rcs_create_branch`, `rcs_branch_checkin` und `rcs_tag` liefern jeweils ein
+neues Archiv zurück. Speichere den Rückgabewert in der Tabellenspalte.
 
 ## Archive prüfen
 
@@ -112,11 +174,9 @@ WHERE id = 1;
 
 ## Derzeitige Einschränkungen
 
-- Check-in und Checkout unterstützen nur trunk-Revisionen; Branches werden
-  nicht unterstützt.
+- Branches können nur von trunk-Revisionen erstellt werden; verschachtelte
+  Branches werden nicht unterstützt.
 - Es werden Textinhalte versioniert, keine Binärdateien.
 - Nicht-leere Inhalte müssen mit einem Zeilenumbruch enden.
-- Der Diff enthält die vollständigen alten und neuen Inhalte statt nur der
-  geänderten Zeilen.
 - `rcs_archive` speichert ein Archiv in einer Spalte; es erzeugt keine
   automatische Historie für andere Spalten.
