@@ -129,7 +129,9 @@ WHERE id = 1;
 ```
 
 Die Archivsyntax unterstützt LF- und CRLF-Zeilenenden. Der Archivtext ist
-weiterhin Text und kann keine beliebigen Binärdaten transportieren.
+weiterhin Text und kann keine beliebigen Binärdaten transportieren. Die
+Regressionstests enthalten ein mit GNU RCS 5.10.1 erzeugtes Archiv; das ist
+ein gezielter Kompatibilitätstest, keine Zusicherung für jede RCS-Variante.
 
 ## Änderungen zusammenführen
 

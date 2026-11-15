@@ -87,6 +87,15 @@ typedef struct RcsLines
     int capacity;
 } RcsLines;
 
+typedef struct RcsScriptOperation
+{
+    char kind;
+    int position;
+    int count;
+    int sequence;
+    char **lines;
+} RcsScriptOperation;
+
 typedef struct RcsDiffOp
 {
     char kind;
@@ -775,22 +784,30 @@ merge_variant(RcsLines *base, RcsChange *changes, int first, int end,
     return result.data;
 }
 
-static char *
-join_lines(RcsLines *lines)
+static int
+compare_script_operations(const void *left, const void *right)
 {
-    StringInfoData result;
-    int i;
+    const RcsScriptOperation *a = left;
+    const RcsScriptOperation *b = right;
 
-    initStringInfo(&result);
-    for (i = 0; i < lines->count; i++)
-        appendStringInfoString(&result, lines->items[i]);
-    return result.data;
+    /* RCS command positions refer to the unmodified source revision. */
+    if (a->position != b->position)
+        return (a->position > b->position) - (a->position < b->position);
+    if (a->kind != b->kind)
+        return a->kind == 'a' ? -1 : 1;
+    return (a->sequence > b->sequence) - (a->sequence < b->sequence);
 }
 
 static char *
 apply_script(const char *base, const char *script)
 {
     RcsLines lines = {NULL, 0, 0};
+    RcsScriptOperation *operations = NULL;
+    int operation_count = 0;
+    int operation_capacity = 0;
+    int source_position = 0;
+    int i;
+    StringInfoData result;
     const char *p = script;
 
     split_lines(base, &lines);
@@ -801,6 +818,7 @@ apply_script(const char *base, const char *script)
         long count;
         char *end;
         long i;
+        RcsScriptOperation parsed;
 
         operation = *p++;
         if (operation != 'a' && operation != 'd')
@@ -823,6 +841,9 @@ apply_script(const char *base, const char *script)
         if (*end == '\r')
             end++;
         p = end + 1;
+        memset(&parsed, 0, sizeof(parsed));
+        parsed.kind = operation;
+        parsed.sequence = operation_count;
         if (operation == 'd')
         {
             if (line_number < 1 || line_number > lines.count ||
@@ -830,29 +851,24 @@ apply_script(const char *base, const char *script)
                 ereport(ERROR,
                         (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
                          errmsg("RCS delete command is out of range")));
-            memmove(&lines.items[line_number - 1],
-                    &lines.items[line_number - 1 + count],
-                    sizeof(char *) * (lines.count - (line_number - 1 + count)));
-            lines.count -= count;
+            parsed.position = (int) line_number - 1;
         }
         else
         {
-            int insertion = (int) line_number;
-            char **added;
-
             if (line_number < 0 || line_number > lines.count)
                 ereport(ERROR,
                         (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
                          errmsg("RCS add command is out of range")));
-            if (count > MaxAllocSize / sizeof(char *))
+            if (count > MaxAllocSize / sizeof(char *) || count > INT_MAX)
                 ereport(ERROR,
                         (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
                          errmsg("RCS edit script is too large")));
-            if (count > INT_MAX - lines.count)
+            if ((Size) count > strlen(p))
                 ereport(ERROR,
-                        (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-                         errmsg("RCS edit script is too large")));
-            added = count ? palloc(sizeof(char *) * count) : NULL;
+                        (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                         errmsg("truncated RCS add command")));
+            parsed.position = (int) line_number;
+            parsed.lines = palloc(sizeof(char *) * count);
             for (i = 0; i < count; i++)
             {
                 const char *line_start = p;
@@ -863,27 +879,50 @@ apply_script(const char *base, const char *script)
                             (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
                              errmsg("truncated RCS add command")));
                 p++;
-                added[i] = pnstrdup(line_start, p - line_start);
+                parsed.lines[i] = pnstrdup(line_start, p - line_start);
             }
-            if (lines.count + count > lines.capacity)
-            {
-                int new_capacity = lines.capacity ? lines.capacity : 16;
-                while (new_capacity < lines.count + count)
-                    new_capacity *= 2;
-                lines.items = lines.items
-                    ? repalloc(lines.items, sizeof(char *) * new_capacity)
-                    : palloc(sizeof(char *) * new_capacity);
-                lines.capacity = new_capacity;
-            }
-            memmove(&lines.items[insertion + count], &lines.items[insertion],
-                    sizeof(char *) * (lines.count - insertion));
-            if (count)
-                memcpy(&lines.items[insertion], added,
-                       sizeof(char *) * count);
-            lines.count += count;
         }
+        parsed.count = (int) count;
+        if (operation_count == operation_capacity)
+        {
+            operation_capacity = operation_capacity
+                ? operation_capacity * 2 : 16;
+            operations = operations
+                ? repalloc(operations,
+                           sizeof(RcsScriptOperation) * operation_capacity)
+                : palloc(sizeof(RcsScriptOperation) * operation_capacity);
+        }
+        operations[operation_count++] = parsed;
     }
-    return join_lines(&lines);
+
+    if (operation_count > 1)
+        qsort(operations, operation_count, sizeof(RcsScriptOperation),
+              compare_script_operations);
+    initStringInfo(&result);
+    for (i = 0; i < operation_count; i++)
+    {
+        RcsScriptOperation *current = &operations[i];
+
+        if (current->position < source_position ||
+            current->position > lines.count)
+            ereport(ERROR,
+                    (errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+                     errmsg("overlapping or unordered RCS edit script")));
+        append_base_lines(&result, &lines, source_position,
+                          current->position);
+        source_position = current->position;
+        if (current->kind == 'a')
+        {
+            int j;
+
+            for (j = 0; j < current->count; j++)
+                appendStringInfoString(&result, current->lines[j]);
+        }
+        else
+            source_position += current->count;
+    }
+    append_base_lines(&result, &lines, source_position, lines.count);
+    return result.data;
 }
 
 static char *

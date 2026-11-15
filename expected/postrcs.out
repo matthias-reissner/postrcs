@@ -101,6 +101,64 @@ END
 $$;
 DO $$
 DECLARE
+    archive_text text := replace($GNU_RCS$head	1.2;
+access;
+symbols
+	release_1_2:1.2;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2026.01.01.00.00.02;	author GNU_RCS_5_10_1;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2026.01.01.00.00.01;	author GNU_RCS_5_10_1;	state Exp;
+branches;
+next	;
+
+
+desc
+@GNU RCS 5.10.1 compatibility fixture@
+
+
+1.2
+log
+@second revision
+@
+text
+@Release notes
+Version 2 @@ stable
+Added a new line
+@
+
+
+1.1
+log
+@initial revision
+@
+text
+@d2 2
+a3 1
+Version 1 @@ stable
+@
+$GNU_RCS$, E'\r\n', E'\n');
+    imported rcs_archive;
+BEGIN
+    imported := rcs_import(archive_text);
+    IF rcs_checkout(imported, '1.1') <>
+           E'Release notes\nVersion 1 @ stable\n' OR
+       rcs_checkout(imported, 'release_1_2') <>
+           E'Release notes\nVersion 2 @ stable\nAdded a new line\n' OR
+       rcs_export(imported) <> archive_text THEN
+        RAISE EXCEPTION 'GNU RCS archive compatibility failed';
+    END IF;
+END
+$$;
+DO $$
+DECLARE
     arch rcs_archive;
     base text := E'alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta\n';
     changed text := E'ALPHA\nbeta\ngamma\nDELTA\nepsilon\nzeta\nETA\n';

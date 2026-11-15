@@ -68,8 +68,8 @@ binary data. Archives are limited to 16 MiB, individual check-in contents to
 8 MiB, and log messages to 1 MiB. Diff and merge use an LCS comparison capped
 at 4 million line pairs; large comparisons beyond that bound fail explicitly.
 The benchmark script in [benchmarks/postrcs_bench.sql](./benchmarks/postrcs_bench.sql)
-provides a repeatable local workload without enforcing machine-dependent timing
-thresholds.
+provides repeatable 1,000-line check-in and near-limit 1,900-line diff/merge
+workloads without enforcing machine-dependent timing thresholds.
 
 The extension's default version is 1.2. Existing 1.0 and 1.1 installations can
 be upgraded with `ALTER EXTENSION postrcs UPDATE;`.
