@@ -1,7 +1,8 @@
 EXTENSION = postrcs
 MODULE_big = postrcs
 DATA = postrcs--1.0.sql postrcs--1.1.sql postrcs--1.2.sql \
-	postrcs--1.0--1.1.sql postrcs--1.1--1.2.sql
+	postrcs--1.2.1.sql postrcs--1.0--1.1.sql \
+	postrcs--1.1--1.2.sql postrcs--1.2--1.2.1.sql
 REGRESS = postrcs
 
 PG_CONFIG ?= pg_config

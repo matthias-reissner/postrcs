@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   package:
-    if: github.event_name != 'release' || github.event.release.tag_name == 'v1.2'
+    if: github.event_name != 'release' || github.event.release.tag_name == 'v1.2.1'
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -58,19 +58,19 @@ jobs:
           }
           $packageScript = Join-Path $PWD "scripts\package-windows.ps1"
           powershell.exe -NoProfile -ExecutionPolicy Bypass `
-            -File $packageScript -PgRoot $pgRoot -Version 1.2
+            -File $packageScript -PgRoot $pgRoot -Version 1.2.1
           if ($LASTEXITCODE -ne 0) {
             throw "Package creation failed with code $LASTEXITCODE."
           }
       - uses: actions/upload-artifact@v4
         with:
-          name: postrcs-1.2-pg18-windows-x64
+          name: postrcs-1.2.1-pg18-windows-x64
           path: |
-            dist/postrcs-1.2-pg18-windows-x64.zip
-            dist/postrcs-1.2-pg18-windows-x64.sha256
+            dist/postrcs-1.2.1-pg18-windows-x64.zip
+            dist/postrcs-1.2.1-pg18-windows-x64.sha256
           if-no-files-found: error
       - name: Attach package to release
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload ${{ github.event.release.tag_name }} dist/postrcs-1.2-pg18-windows-x64.zip dist/postrcs-1.2-pg18-windows-x64.sha256 --clobber
+        run: gh release upload ${{ github.event.release.tag_name }} dist/postrcs-1.2.1-pg18-windows-x64.zip dist/postrcs-1.2.1-pg18-windows-x64.sha256 --clobber

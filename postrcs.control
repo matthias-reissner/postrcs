@@ -1,4 +1,4 @@
 comment = 'RCS archive data type and revision operations'
-default_version = '1.2'
+default_version = '1.2.1'
 module_pathname = '$libdir/postrcs'
 relocatable = true

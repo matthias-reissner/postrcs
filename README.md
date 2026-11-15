@@ -71,8 +71,8 @@ The benchmark script in [benchmarks/postrcs_bench.sql](./benchmarks/postrcs_benc
 provides repeatable 1,000-line check-in and near-limit 1,900-line diff/merge
 workloads without enforcing machine-dependent timing thresholds.
 
-The extension's default version is 1.2. Existing 1.0 and 1.1 installations can
-be upgraded with `ALTER EXTENSION postrcs UPDATE;`.
+The extension's default version is 1.2.1. Existing 1.0, 1.1, and 1.2
+installations can be upgraded with `ALTER EXTENSION postrcs UPDATE;`.
 
 Run the repeatable timing workload in a database with PostRCS installed:
 

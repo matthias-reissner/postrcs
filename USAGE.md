@@ -21,8 +21,8 @@ FROM pg_extension
 WHERE extname = 'postrcs';
 ```
 
-Nach Installation der 1.2-Dateien aktualisierst du eine bestehende 1.0- oder
-1.1-Installation einmal pro Datenbank:
+Nach Installation der 1.2.1-Dateien aktualisierst du eine bestehende 1.0-,
+1.1- oder 1.2-Installation einmal pro Datenbank:
 
 ```sql
 ALTER EXTENSION postrcs UPDATE;

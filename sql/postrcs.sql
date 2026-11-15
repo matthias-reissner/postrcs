@@ -1,6 +1,15 @@
 CREATE EXTENSION postrcs;
 
 DO $$
+BEGIN
+    IF (SELECT extversion FROM pg_extension WHERE extname = 'postrcs') <>
+       '1.2.1' THEN
+        RAISE EXCEPTION 'new installation did not use PostRCS 1.2.1';
+    END IF;
+END
+$$;
+
+DO $$
 DECLARE
     arch rcs_archive;
     revision_count integer;
@@ -97,6 +106,18 @@ BEGIN
     END IF;
     IF rcs_is_valid(E'head 1.2;\naccess;\nsymbols;\nlocks; strict;\ncomment @# @;\n\n1.2\ndate 2026.01.01.00.00.00; author demo; state Exp;\nbranches;\nnext 1.1;\n\n1.1\ndate 2026.01.01.00.00.00; author demo; state Exp;\nbranches;\nnext ;\n\ndesc\n@@\n\n1.2\nlog\n@head@\ntext\n@ok\n@\n1.1\nlog\n@old@\ntext\n@z1 1\n@') THEN
         RAISE EXCEPTION 'malformed RCS delta was accepted';
+    END IF;
+END
+$$;
+
+DROP EXTENSION postrcs;
+CREATE EXTENSION postrcs VERSION '1.2';
+ALTER EXTENSION postrcs UPDATE TO '1.2.1';
+DO $$
+BEGIN
+    IF (SELECT extversion FROM pg_extension WHERE extname = 'postrcs') <>
+       '1.2.1' THEN
+        RAISE EXCEPTION 'upgrade did not install PostRCS 1.2.1';
     END IF;
 END
 $$;

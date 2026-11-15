@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string] $PgRoot,
-    [string] $Version = "1.2"
+    [string] $Version = "1.2.1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,16 +26,12 @@ try {
         -Destination (Join-Path $stagePath "lib\postrcs.dll")
     Copy-Item -LiteralPath (Join-Path $repositoryRoot "postrcs.control") `
         -Destination $extensionPath
-    Copy-Item -LiteralPath (Join-Path $repositoryRoot "postrcs--1.0.sql") `
-        -Destination $extensionPath
-    Copy-Item -LiteralPath (Join-Path $repositoryRoot "postrcs--1.1.sql") `
-        -Destination $extensionPath
-    Copy-Item -LiteralPath (Join-Path $repositoryRoot "postrcs--1.2.sql") `
-        -Destination $extensionPath
-    Copy-Item -LiteralPath (Join-Path $repositoryRoot "postrcs--1.0--1.1.sql") `
-        -Destination $extensionPath
-    Copy-Item -LiteralPath (Join-Path $repositoryRoot "postrcs--1.1--1.2.sql") `
-        -Destination $extensionPath
+    $extensionScripts = Get-ChildItem -LiteralPath $repositoryRoot `
+        -Filter "postrcs--*.sql" -File
+    if (-not ($extensionScripts.Name -contains "postrcs--$Version.sql")) {
+        throw "Install script for PostRCS $Version was not found."
+    }
+    $extensionScripts | Copy-Item -Destination $extensionPath
     Copy-Item -LiteralPath (Join-Path $repositoryRoot "USAGE.md") `
         -Destination $stagePath
     Copy-Item -LiteralPath (Join-Path $distributionPath "README.txt") `
